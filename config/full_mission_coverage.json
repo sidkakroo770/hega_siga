@@ -1,0 +1,21 @@
+{
+  "n_min": -20.0,
+  "n_max": 20.0,
+  "e_min": -15.0,
+  "e_max": 15.0,
+  "altitude": 10.0,
+  "ground_above_home": -0.207,
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "hfov": 0.49214025697159175,
+    "down_offset": 0.05
+  },
+  "overlap": 0.3,
+  "resolution": 0.1,
+  "arrival": 0.3,
+  "speed": 0.75,
+  "no_progress": 120.0,
+  "downward_topic": "/iris/camera_downward/image_raw",
+  "clock_topic": "/world/miss2_world/clock"
+}

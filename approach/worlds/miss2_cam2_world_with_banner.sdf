@@ -1,0 +1,972 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="miss2_world">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- ===================================================== -->
+    <!-- GAZEBO SYSTEM PLUGINS                                -->
+    <!-- ===================================================== -->
+
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics"/>
+
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands"/>
+
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+
+    <plugin
+      filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu"/>
+
+
+    <!-- ===================================================== -->
+    <!-- GUI                                                   -->
+    <!-- ===================================================== -->
+
+    <gui fullscreen="0">
+
+      <plugin filename="GzScene3D" name="3D View">
+
+        <gz-gui>
+          <title>3D View</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="string" key="state">docked</property>
+        </gz-gui>
+
+        <engine>ogre2</engine>
+        <scene>scene</scene>
+
+        <ambient_light>0.5 0.5 0.5 1</ambient_light>
+        <background_color>0.8 0.8 0.8 1</background_color>
+
+        <camera_pose>-5 0 5 0 0.5 0</camera_pose>
+
+      </plugin>
+
+      <plugin filename="EntityTree" name="Entity tree"/>
+
+    </gui>
+
+
+    <!-- ===================================================== -->
+    <!-- SUN                                                    -->
+    <!-- ===================================================== -->
+
+    <light type="directional" name="sun">
+
+      <cast_shadows>true</cast_shadows>
+
+      <pose>0 0 15 0 0 0</pose>
+
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+
+      <specular>0.2 0.2 0.2 1</specular>
+
+      <direction>-0.5 0.1 -0.9</direction>
+
+    </light>
+
+
+    <!-- ===================================================== -->
+    <!-- MISS2 ENVIRONMENT                                     -->
+    <!-- ===================================================== -->
+
+    <include>
+      <uri>model://miss2_env</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+
+    <!-- ===================================================== -->
+    <!-- ARDUPILOT IRIS DRONE                                 -->
+    <!-- ===================================================== -->
+
+    <include>
+      <uri>model://iris_with_ardupilot</uri>
+      <pose>0 -36.50 0.35 0 0 1.5708</pose>
+    </include>
+
+
+    <!-- ===================================================== -->
+    <!-- CAMERA RENDERING AND SENSOR PUBLISHING               -->
+    <!-- ===================================================== -->
+
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+
+      <render_engine>ogre2</render_engine>
+
+    </plugin>
+
+
+    <!-- ===================================================== -->
+    <!-- GREEN BANNER - AEROTHON 2026                         -->
+    <!-- ===================================================== -->
+
+    <model name="green_banner">
+
+      <!--
+        X     Y      Z     Roll Pitch Yaw
+       -4   -30    2.5      0     0    0
+      -->
+
+      <pose>-4 -30 2.5 0 0 0</pose>
+
+
+      <link name="banner_link">
+
+
+        <!-- ================================================= -->
+        <!-- GREEN BACKGROUND                                  -->
+        <!-- ================================================= -->
+
+        <visual name="banner_background">
+
+          <geometry>
+            <box>
+              <size>3.5 0.08 1.0</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>0 1 0 1</ambient>
+            <diffuse>0 1 0 1</diffuse>
+            <specular>0 0 0 1</specular>
+          </material>
+
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- A                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="A_left">
+          <pose>-1.41 -0.055 0 0 -1.25 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.46 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="A_right">
+          <pose>-1.41 -0.055 0 0 1.25 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.46 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="A_top">
+          <pose>-1.41 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="A_middle">
+          <pose>-1.41 -0.055 0.02 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.14 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- E                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="E_left">
+          <pose>-1.19 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="E_top">
+          <pose>-1.12 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="E_mid">
+          <pose>-1.12 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.15 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="E_bottom">
+          <pose>-1.12 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- R                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="R_left">
+          <pose>-0.97 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="R_top">
+          <pose>-0.90 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.15 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="R_mid">
+          <pose>-0.90 -0.055 0.02 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.15 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="R_upper_right">
+          <pose>-0.84 -0.055 0.12 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="R_leg">
+          <pose>-0.86 -0.055 -0.12 0 1.08 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.28 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- O                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="O_left">
+          <pose>-0.74 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O_right">
+          <pose>-0.58 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O_top">
+          <pose>-0.66 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O_bottom">
+          <pose>-0.66 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- T                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="T_top">
+          <pose>-0.47 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="T_middle">
+          <pose>-0.47 -0.055 -0.02 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.44</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- H                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="H_left">
+          <pose>-0.30 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="H_right">
+          <pose>-0.14 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="H_mid">
+          <pose>-0.22 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.16 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- O                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="O2_left">
+          <pose>-0.06 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O2_right">
+          <pose>0.10 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O2_top">
+          <pose>0.02 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="O2_bottom">
+          <pose>0.02 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- N                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="N_left">
+          <pose>0.22 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="N_right">
+          <pose>0.38 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="N_diagonal">
+          <pose>0.30 -0.055 0 0 0.58 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.47 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- 2                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="two_top">
+          <pose>0.60 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two_upper_right">
+          <pose>0.68 -0.055 0.11 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two_mid">
+          <pose>0.60 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two_lower_left">
+          <pose>0.52 -0.055 -0.11 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two_bottom">
+          <pose>0.60 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- 0                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="zero_left">
+          <pose>0.84 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="zero_right">
+          <pose>1.00 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="zero_top">
+          <pose>0.92 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="zero_bottom">
+          <pose>0.92 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- SECOND 2                                           -->
+        <!-- ================================================= -->
+
+        <visual name="two2_top">
+          <pose>1.16 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two2_upper_right">
+          <pose>1.24 -0.055 0.11 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two2_mid">
+          <pose>1.16 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two2_lower_left">
+          <pose>1.08 -0.055 -0.11 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="two2_bottom">
+          <pose>1.16 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <!-- ================================================= -->
+        <!-- 6                                                   -->
+        <!-- ================================================= -->
+
+        <visual name="six_left">
+          <pose>1.39 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.45</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="six_top">
+          <pose>1.47 -0.055 0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="six_mid">
+          <pose>1.47 -0.055 0 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="six_bottom">
+          <pose>1.47 -0.055 -0.21 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.18 0.025 0.035</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+        <visual name="six_lower_right">
+          <pose>1.55 -0.055 -0.11 0 0 0</pose>
+
+          <geometry>
+            <box>
+              <size>0.035 0.025 0.20</size>
+            </box>
+          </geometry>
+
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+          </material>
+        </visual>
+
+
+      </link>
+
+    </model>
+
+
+  </world>
+</sdf>

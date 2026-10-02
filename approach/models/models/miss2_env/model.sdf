@@ -1,0 +1,23 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="miss2_env">
+    <static>true</static>
+    <link name="link">
+      <pose>0 0 0 1.57079632679 0 0</pose>
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://miss2_env/miss2.glb</uri>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>model://miss2_env/miss2.glb</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

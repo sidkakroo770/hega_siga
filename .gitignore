@@ -1,0 +1,52 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Logs / telemetry / generated artifacts
+*.log
+*.tlog
+*.tlog.raw
+*.BIN
+artifacts/
+logs/
+
+# OS/editor junk
+.DS_Store
+.vscode/
+.idea/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated mission/test artifacts
+artifacts/
+**/artifacts/
+
+# Flight/SITL telemetry and logs
+*.tlog
+*.tlog.raw
+*.BIN
+*.log
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.pdf

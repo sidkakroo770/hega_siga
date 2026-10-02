@@ -1,0 +1,122 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.9">
+  <world name="corridor_test">
+    <physics name="physics" type="ignored">
+      <max_step_size>.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics" />
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands" />
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster" />
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu" />
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>.9 .9 .9 1</diffuse>
+      <direction>-.5 .1 -1</direction>
+    </light>
+    <model name="ground">
+      <static>true</static>
+      <pose>5 0 -.1 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>40 20 .2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>40 20 .2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.35 .35 .35 1</ambient>
+            <diffuse>.35 .35 .35 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="left_wall">
+      <static>true</static>
+      <pose>5 1.85 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>14 .2 3</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>14 .2 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.7 .7 .85 1</ambient>
+            <diffuse>.7 .7 .85 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="right_wall">
+      <static>true</static>
+      <pose>5 -1.85 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>14 .2 3</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>14 .2 3</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.85 .7 .7 1</ambient>
+            <diffuse>.85 .7 .7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="roof">
+      <static>true</static>
+      <pose>5 0 3.1 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>14 3.9 .2</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>14 3.9 .2</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>.8 .8 .8 1</ambient>
+            <diffuse>.8 .8 .8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <include>
+      <uri>model://iris_corridor_test</uri>
+      <!-- Start 2 m before the corridor entrance at X=-2, yawed 15 degrees left. -->
+      <pose>-4 0 .25 0 0 0.261799</pose>
+    </include>
+  </world>
+</sdf>

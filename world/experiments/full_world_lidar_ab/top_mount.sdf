@@ -1,0 +1,20 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="full_world_lidar_ab_top">
+    <physics name="physics" type="ignored"><max_step_size>.001</max_step_size></physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <include>
+      <uri>model://miss2_env</uri>
+    </include>
+    <!-- Existing miss2_preentry_test pose. Static prevents falling without SITL. -->
+    <include>
+      <uri>model://lidar_probe_top</uri>
+      <pose>0 -65.50 2.90 0 0 1.5708</pose>
+      <static>true</static>
+    </include>
+  </world>
+</sdf>

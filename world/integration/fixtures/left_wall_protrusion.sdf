@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- Gazebo-only regression fixture: a static box protruding from the
+       corridor's left (negative world-X) wall. Not a competition dimension. -->
+  <model name="left_wall_protrusion">
+    <static>true</static>
+    <pose>-5.35 -26.0 1.5 0 0 0</pose>
+    <link name="body">
+      <collision name="collision">
+        <geometry><box><size>1.2 0.8 3.0</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>1.2 0.8 3.0</size></box></geometry>
+        <material>
+          <ambient>0.1 0.2 0.8 1</ambient>
+          <diffuse>0.1 0.2 0.8 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

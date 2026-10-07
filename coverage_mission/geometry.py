@@ -104,15 +104,23 @@ def validated_hsv(frame, cfg):
     if frame.shape != (cfg.camera.height,cfg.camera.width,3) or frame.dtype != np.uint8:
         raise ValueError('Image dimensions/encoding do not match calibration')
     hsv=cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
-    usable=(hsv[:,:,2]>=35)&((hsv[:,:,2]<=240)|(hsv[:,:,1]>=15))
-    if np.count_nonzero(usable)<frame.shape[0]*frame.shape[1]*.02:
-        raise UnusableImage('Dark/saturated frame is not free-ground evidence')
+    if not cfg.assume_nonred_ground_clear:
+        usable=(hsv[:,:,2]>=cfg.red_value_min)&((hsv[:,:,2]<=250)|(hsv[:,:,1]>=cfg.red_saturation_min))
+        if np.count_nonzero(usable)<frame.shape[0]*frame.shape[1]*.02:
+            raise UnusableImage('Dark/saturated frame is not free-ground evidence')
     return hsv
+
+
+def red_mask(hsv,cfg):
+    return (cv2.inRange(hsv,(0,cfg.red_saturation_min,cfg.red_value_min),
+                        (cfg.red_hue_low_max,255,255)) |
+            cv2.inRange(hsv,(cfg.red_hue_high_min,cfg.red_saturation_min,cfg.red_value_min),
+                        (179,255,255)))
 
 
 def red_regions(frame, cfg):
     hsv=validated_hsv(frame,cfg)
-    mask=cv2.inRange(hsv,(0,100,55),(12,255,255)) | cv2.inRange(hsv,(168,100,55),(180,255,255))
+    mask=red_mask(hsv,cfg)
     # Do not erode small hazards away. Ignore only sub-pixel/degenerate contours.
     contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
     polygons=[]

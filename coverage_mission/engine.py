@@ -2,9 +2,11 @@
 from collections import deque
 from dataclasses import dataclass, asdict
 import math
+import time
+import cv2
 import numpy as np
 from scipy import ndimage
-from .geometry import Projector, red_regions
+from .geometry import Projector, validated_hsv, red_mask
 from .planning import GroundMap, CoveragePlan, route, astar
 
 
@@ -80,10 +82,17 @@ class Engine:
         many_swaths=max(cfg.n_max-cfg.n_min,cfg.e_max-cfg.e_min)>4*max(width,length)
         self.replan_period=max(width,length)/cfg.speed if many_swaths else .5
         self.last_plan=-math.inf
+        self.next_route_attempt=-math.inf
+        self.last_planning_wall_ms=0.
+        self.planning_timeouts=0
+        self.no_route_since=None
         self.last_pose=None
         self.last_velocity=np.zeros(2)
         self.last_progress_t=None
-        self.progress_count=0
+        self.progress_done=0
+        self.progress_observed=0
+        self.progress_origin=None
+        self.max_relocation_distance=0.
         self.settle_t=None
         self.terminal=None
         self.last_frame_pose=None
@@ -92,11 +101,49 @@ class Engine:
         self.repair_viewpoint=False
         self.repair_settle_t=None
 
-    def observe(self,frame,pose):
-        mask,regions=red_regions(frame,self.cfg)
+    def observe(self,frame,pose,hsv=None):
+        hsv=validated_hsv(frame,self.cfg) if hsv is None else hsv
+        mask=red_mask(hsv,self.cfg)
+        if self.cfg.assume_nonred_ground_clear:
+            # Provisional mission rule: dark/black imagery is ground unless
+            # the red detector marks it red. Transport freshness remains
+            # separate; image content no longer rejects a black frame.
+            usable=np.full(mask.shape,255,np.uint8)
+        else:
+            usable=((hsv[:,:,2]>=self.cfg.red_value_min)&
+                    ((hsv[:,:,2]<=250)|(hsv[:,:,1]>=self.cfg.red_saturation_min))).astype(np.uint8)*255
+        if not self.cfg.assume_nonred_ground_clear and self.cfg.neutral_print_support_m:
+            # The known ground prints are black/white, not red. Accept a dark
+            # pixel only where nearby bright neutral print is actually visible;
+            # a large black patch or dark frame cannot become clear evidence.
+            # Red-dominated neighbours veto that inference. This does not
+            # decode or locate QR targets.
+            height=pose.alt-self.cfg.ground_above_home-self.cfg.camera.down_offset
+            support=max(3,int(round(self.cfg.neutral_print_support_m*self.cfg.camera.fx/height)))
+            support=min(support|1,min(frame.shape[:2])//2*2-1)
+            bright_neutral=((hsv[:,:,1]<=40)&(hsv[:,:,2]>=80)).astype(np.uint8)*255
+            usable[bright_neutral>0]=255
+            nearby_white=cv2.blur(bright_neutral,(support,support))
+            nearby_red=cv2.blur(mask,(support,support))
+            printed_dark=(hsv[:,:,2]<self.cfg.red_value_min)&(nearby_white>=50)&(nearby_red<128)
+            usable[printed_dark]=255
+        if not self.cfg.assume_nonred_ground_clear and self.cfg.green_texture_support_m:
+            # Dark grass blades have unreadable individual pixels, but a small
+            # ground patch can still carry a stable green signal. Keep this
+            # scene-specific evidence separate from the red detector. A black
+            # patch or a dark neutral/red patch remains unknown. The support
+            # is in metres, so changing lens/resolution does not bake in 51 px.
+            height=pose.alt-self.cfg.ground_above_home-self.cfg.camera.down_offset
+            support=max(3,int(round(self.cfg.green_texture_support_m*self.cfg.camera.fx/height)))
+            support=min(support|1,min(frame.shape[:2])//2*2-1)
+            mean=cv2.blur(frame,(support,support))
+            blue=mean[:,:,0].astype(np.int16)
+            green=mean[:,:,1].astype(np.int16)
+            red=mean[:,:,2].astype(np.int16)
+            green_ground=(green>=self.cfg.green_texture_mean_min)&(green*5>=red*6)&(green*5>=blue*6)
+            usable[green_ground]=255
         footprint=self.projector.footprint(pose)
-        polygons=[self.projector.project(p,pose) for p in regions]
-        if self.ground.observe(footprint,polygons,pose.t):
+        if self.ground.observe_pixels(footprint,mask,usable,pose.t):
             self.last_frame_pose=pose
         return mask
 
@@ -147,13 +194,24 @@ class Engine:
         cfg=self.cfg; g=self.ground
         d=Decision('HOLD','Waiting for valid observation',yaw=cfg.heading,
                    source_t=pose.t,frame_t=g.last_t if math.isfinite(g.last_t) else -1.,camera_t=camera_t,
-                   pending=len(self.plan.pending()),unseen=int((~g.observed & ~g.red).sum()))
+                   pending=len(self.plan.pending()),
+                   unseen=int((~g.observed & ~g.contextual_clear & ~g.red & ~g.enclosed).sum()))
         if not pose.valid(): return d
-        if self.last_pose and (pose.t<self.last_pose.t or
-                np.linalg.norm(pose.xy-self.last_pose.xy)>max(.3,3*(pose.t-self.last_pose.t)) or
-                abs(math.atan2(math.sin(pose.yaw-self.last_pose.yaw),math.cos(pose.yaw-self.last_pose.yaw)))>
-                max(math.radians(5),pose.t-self.last_pose.t)):
-            self.terminal='ABORTED: clock/origin discontinuity'
+        if self.last_pose:
+            dt_pose=pose.t-self.last_pose.t
+            horizontal_residual=(np.linalg.norm(
+                pose.xy-self.last_pose.xy-
+                np.array([pose.vn+self.last_pose.vn,pose.ve+self.last_pose.ve])*dt_pose*.5)
+                if dt_pose>=0 else math.inf)
+            altitude_residual=(abs(pose.alt-self.last_pose.alt+
+                                   (pose.vd+self.last_pose.vd)*dt_pose*.5)
+                               if dt_pose>=0 else math.inf)
+            if (dt_pose<0 or horizontal_residual>.30+.25*dt_pose
+                    or altitude_residual>.40+.25*dt_pose
+                    or abs(math.atan2(math.sin(pose.yaw-self.last_pose.yaw),
+                                      math.cos(pose.yaw-self.last_pose.yaw)))>
+                       max(math.radians(5),dt_pose)):
+                self.terminal='ABORTED: clock/origin/pose discontinuity'
         if self.last_pose is None or pose.t>self.last_pose.t:
             self.history.append(pose)
         while self.history and pose.t-self.history[0].t>30: self.history.popleft()
@@ -186,12 +244,31 @@ class Engine:
         g.visits[cell]=min(65535,int(g.visits[cell])+1)
         if fresh and not escape: self.plan.update(pose,g)
         pending=self.plan.pending()
-        unseen=~g.observed & ~g.red & ~g.enclosed
+        unseen=~g.observed & ~g.contextual_clear & ~g.red & ~g.enclosed
         d.pending=len(pending); d.unseen=int(unseen.sum())
-        progress=int(self.plan.done.sum()+g.observed.sum())
-        if progress!=self.progress_count or self.last_progress_t is None:
-            self.last_progress_t=pose.t; self.progress_count=progress
-        if not escape and (len(pending) or unseen.any()) and pose.t-self.last_progress_t>cfg.no_progress:
+        done_count=int(self.plan.done.sum())
+        observed_count=int(g.observed.sum())
+        required_cells=max(1,math.ceil(cfg.minimum_observation_progress_area/
+                                       (cfg.resolution*cfg.resolution)))
+        if (self.last_progress_t is None or done_count>self.progress_done or
+                observed_count-self.progress_observed>=required_cells):
+            self.last_progress_t=pose.t
+            self.progress_done=done_count
+            self.progress_observed=observed_count
+            self.progress_origin=pose.xy
+            self.max_relocation_distance=0.
+        else:
+            # A long, checked connector between the last credited lane and a
+            # distant remaining patch is not a coverage stall. Credit only net
+            # displacement from that last evidence point, not distance flown
+            # around a loop, and cap it at the field diagonal. Thus repeated
+            # circling still reaches a finite no-progress deadline.
+            diagonal=math.hypot(cfg.n_max-cfg.n_min,cfg.e_max-cfg.e_min)
+            self.max_relocation_distance=max(self.max_relocation_distance,
+                min(diagonal,float(np.linalg.norm(pose.xy-self.progress_origin))))
+        progress_allowance=(cfg.no_progress+
+                            self.max_relocation_distance/cfg.relocation_credit_speed)
+        if not escape and (len(pending) or unseen.any()) and pose.t-self.last_progress_t>progress_allowance:
             self.terminal='BLOCKED: no measured traversal/observation progress'
             d.state='BLOCKED'; d.reason='No measured traversal/observation progress'; return d
         if self.residence.failed and not inside:
@@ -236,10 +313,23 @@ class Engine:
             # half-second. Replan at most once per camera-swath travel time,
             # or immediately when a leg is reached/invalidated. Every current
             # leg is still checked against fresh red evidence below.
-            if (not repair and pose.t-self.last_plan>=self.replan_period) or not self.path:
+            if (((not repair and pose.t-self.last_plan>=self.replan_period) or not self.path)
+                    and pose.t>=self.next_route_attempt):
                 target=(self.plan.reachable_target(g,pose.xy,pending) if len(pending)
                         else g.point(np.argwhere(unseen)[0]))
-                self.path=route(g,pose.xy,target); self.last_plan=pose.t
+                plan_started=time.monotonic()
+                candidate=route(g,pose.xy,target,cfg.planning_wall_budget)
+                self.last_planning_wall_ms=(time.monotonic()-plan_started)*1000
+                if candidate is None:
+                    self.planning_timeouts+=1
+                    # Retain only a still-checked leg. If none exists, stop and
+                    # retry after a bounded delay instead of spinning on A*.
+                    if self.path and not g.line_clear(pose.xy,self.path[0]):
+                        self.path=[]
+                    self.next_route_attempt=pose.t+.25
+                else:
+                    self.path=candidate
+                    self.last_plan=pose.t
                 self.repair_viewpoint=repair and bool(self.path)
         while self.path and np.linalg.norm(self.path[0]-pose.xy)<min(cfg.resolution/3,cfg.arrival):
             # A recovery endpoint's tolerance disk may still overlap the unsafe
@@ -250,12 +340,16 @@ class Engine:
             if escape and len(self.path)>1 and not g.line_clear(pose.xy,self.path[1],g.observed & g.inset): break
             self.path.pop(0)
         if not self.path:
+            if self.no_route_since is None: self.no_route_since=pose.t
             self.last_velocity[:]=0
             d.state='HOLD'; d.reason='No checked route; acquiring ground observations'
-            if pose.t-self.last_progress_t>cfg.no_progress:
+            # New pixels from hover jitter are not navigation progress. Do not
+            # let them keep an unroutable aircraft in HOLD indefinitely.
+            if pose.t-self.no_route_since>cfg.no_progress:
                 self.terminal='BLOCKED: no observable/reachable coverage progress'
                 d.state='BLOCKED'; d.reason='No observable/reachable coverage progress'
             return d
+        self.no_route_since=None
         delta=self.path[0]-pose.xy; distance=np.linalg.norm(delta)
         direction=delta/max(distance,1e-9)
         speed=min(cfg.speed,math.sqrt(2*cfg.braking*distance),distance*.9)

@@ -1,14 +1,34 @@
 import cv2
+import math
 import numpy as np
 
 class HybridBannerDetector:
-    def __init__(self, panel_only=False):
-        # Tighter green mask is working perfectly!
-        self.lower_green = np.array([45, 100, 80])
-        self.upper_green = np.array([75, 255, 255])
-        
-        # Minimum size requirement
-        self.min_area = 700
+    def __init__(self, panel_only=False, lower_green=(45, 100, 80),
+                 upper_green=(75, 255, 255), min_area_at_640x480=700,
+                 morph_kernel_size=5, aspect_ratio_bounds=(0.8, 5.0),
+                 min_extent=0.15):
+        # Gazebo baseline. Real IMX296/lens/lighting values require calibration.
+        lower = tuple(int(v) for v in lower_green)
+        upper = tuple(int(v) for v in upper_green)
+        if (len(lower) != 3 or len(upper) != 3
+                or not all(0 <= lower[i] <= upper[i] <= (179 if i == 0 else 255)
+                           for i in range(3))):
+            raise ValueError("invalid OpenCV HSV bounds")
+        if not math.isfinite(min_area_at_640x480) or min_area_at_640x480 <= 0:
+            raise ValueError("minimum banner area must be positive")
+        if not isinstance(morph_kernel_size, int) or morph_kernel_size < 1 or morph_kernel_size % 2 == 0:
+            raise ValueError("morphology kernel size must be a positive odd integer")
+        aspect_low, aspect_high = (float(v) for v in aspect_ratio_bounds)
+        if (not all(math.isfinite(v) for v in (aspect_low, aspect_high, min_extent))
+                or not 0 < aspect_low < aspect_high
+                or not 0 < min_extent < 1):
+            raise ValueError("invalid banner shape bounds")
+        self.lower_green = np.array(lower, dtype=np.uint8)
+        self.upper_green = np.array(upper, dtype=np.uint8)
+        self.min_area = float(min_area_at_640x480)
+        self.morph_kernel = np.ones((morph_kernel_size, morph_kernel_size), np.uint8)
+        self.aspect_ratio_bounds = (aspect_low, aspect_high)
+        self.min_extent = float(min_extent)
         self.panel_only = panel_only
         self.tracked_bbox = None
         self.tracked_area = None
@@ -42,9 +62,10 @@ class HybridBannerDetector:
                 and 0.75 <= area / self.tracked_area <= 1.30
                 and 0.80 <= (w/h) / (pw/ph) <= 1.25)
 
-    def detect(self, frame, relaxed_approach=False):
+    def detect(self, frame, relaxed_approach=False, debug=True):
         # 0. Get screen dimensions to calculate errors
         height, width = frame.shape[:2]
+        min_area = self.min_area * width * height / (640 * 480)
         screen_center_x = width // 2
         screen_center_y = height // 2
 
@@ -58,7 +79,7 @@ class HybridBannerDetector:
             "clipped": False,
             "error_x": 0, # Added for velocity control
             "error_y": 0, # Added for velocity control
-            "debug_frame": frame.copy()
+            "debug_frame": frame.copy() if debug else None
         }
         
         # 1. COLOR DETECTION
@@ -66,15 +87,16 @@ class HybridBannerDetector:
         green_mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
         
         # 2. MORPHOLOGICAL CLEANUP
-        kernel = np.ones((5,5), np.uint8)
-        green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
+        green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, self.morph_kernel)
         
         # --- PICTURE IN PICTURE DEBUG ---
-        mask_small = cv2.resize(green_mask, (160, 120))
-        mask_bgr = cv2.cvtColor(mask_small, cv2.COLOR_GRAY2BGR)
-        result["debug_frame"][0:120, 0:160] = mask_bgr
-        cv2.rectangle(result["debug_frame"], (0, 0), (160, 120), (255, 255, 255), 1)
-        cv2.putText(result["debug_frame"], "MASK", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        if debug:
+            preview_w, preview_h = min(160, width), min(120, height)
+            mask_small = cv2.resize(green_mask, (preview_w, preview_h))
+            mask_bgr = cv2.cvtColor(mask_small, cv2.COLOR_GRAY2BGR)
+            result["debug_frame"][0:preview_h, 0:preview_w] = mask_bgr
+            cv2.rectangle(result["debug_frame"], (0, 0), (preview_w-1, preview_h-1), (255, 255, 255), 1)
+            cv2.putText(result["debug_frame"], "MASK", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         # --------------------------------
         
         # Find contours of the green blobs
@@ -89,11 +111,11 @@ class HybridBannerDetector:
             aspect_ratio = w / float(h)
             extent = area / (w * h)
             reason = None
-            if area <= self.min_area:
+            if area <= min_area:
                 reason = "area_below_minimum"
-            elif not relaxed_approach and not 0.8 < aspect_ratio < 5.0:
+            elif not relaxed_approach and not self.aspect_ratio_bounds[0] < aspect_ratio < self.aspect_ratio_bounds[1]:
                 reason = "aspect_ratio"
-            elif extent <= 0.15:
+            elif extent <= self.min_extent:
                 reason = "low_extent"
             elif not relaxed_approach:
                 peri = cv2.arcLength(cnt, True)
@@ -107,7 +129,7 @@ class HybridBannerDetector:
                 valid_contours.append(cnt)
             else:
                 rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
-                if area > self.min_area:
+                if debug and area > min_area:
                     cv2.putText(result["debug_frame"], "REJ: " + reason,
                                 (x, max(15, y-5)), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.4, (0, 0, 255), 1)
@@ -117,8 +139,9 @@ class HybridBannerDetector:
 
         if not valid_contours:
             # Draw camera center crosshairs even when nothing is detected
-            cv2.line(result["debug_frame"], (screen_center_x, 0), (screen_center_x, height), (255, 255, 255), 1)
-            cv2.line(result["debug_frame"], (0, screen_center_y), (width, screen_center_y), (255, 255, 255), 1)
+            if debug:
+                cv2.line(result["debug_frame"], (screen_center_x, 0), (screen_center_x, height), (255, 255, 255), 1)
+                cv2.line(result["debug_frame"], (0, screen_center_y), (width, screen_center_y), (255, 255, 255), 1)
             return result
             
         best_contour = max(valid_contours, key=cv2.contourArea)
@@ -142,13 +165,12 @@ class HybridBannerDetector:
         result["error_y"] = center_y - screen_center_y
         
         # Draw bounding box and target center
-        cv2.rectangle(result["debug_frame"], (x, y), (x+w, y+h), (0, 255, 0), 3)
-        cv2.circle(result["debug_frame"], (center_x, center_y), 5, (0, 0, 255), -1)
-        cv2.putText(result["debug_frame"], "BANNER LOCKED", (x, y-10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        
-        # Draw absolute camera crosshairs
-        cv2.line(result["debug_frame"], (screen_center_x, 0), (screen_center_x, height), (255, 255, 255), 1)
-        cv2.line(result["debug_frame"], (0, screen_center_y), (width, screen_center_y), (255, 255, 255), 1)
+        if debug:
+            cv2.rectangle(result["debug_frame"], (x, y), (x+w, y+h), (0, 255, 0), 3)
+            cv2.circle(result["debug_frame"], (center_x, center_y), 5, (0, 0, 255), -1)
+            cv2.putText(result["debug_frame"], "BANNER LOCKED", (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            cv2.line(result["debug_frame"], (screen_center_x, 0), (screen_center_x, height), (255, 255, 255), 1)
+            cv2.line(result["debug_frame"], (0, screen_center_y), (width, screen_center_y), (255, 255, 255), 1)
         
         return result

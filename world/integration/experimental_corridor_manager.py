@@ -11,7 +11,7 @@ os.environ.setdefault(
 )
 
 import argparse
-import json
+from contextlib import contextmanager
 import math
 import sys
 import threading
@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Optional
 
 
-from corridor_handoff import panel_front_distance
 from corridor_altitude import AltitudeController
 
 import cv2
@@ -88,8 +87,21 @@ from native.mission_runner import (
     NativeMissionRunner,
     VehiclePose,
 )
+from native.common.banner_guard import BannerGuard, BannerGuardConfig
+from native.common.validity import attitude_valid, pose_valid, scan_valid, sector_clearance
+from command_service import CommandService
+from camera_frame import decode_gazebo_bgr, gazebo_source_stamp_ns
+from entrance_readiness import EntranceReadiness, StagingEnvelope
+from pose_integrity import PoseIntegrity
+from preview_service import PreviewService
+from snapshot_service import SnapshotService
+from health_metrics import HealthMetrics
+from async_log import AsyncLogStream
+from source_clock import SourceClockGate
+from startup_control import StartupConfig, StartupController, StartupFeedback
 
 from coverage_mission.config import Config as CoverageConfig
+from coverage_mission.field_frame import FieldFrame
 from coverage_mission.runtime import main as run_coverage
 
 
@@ -100,6 +112,8 @@ from coverage_mission.runtime import main as run_coverage
 # ============================================================
 
 class ExperimentState(str, Enum):
+
+    STARTUP = "STARTUP"
 
     BANNER_SEARCH = "BANNER_SEARCH"
 
@@ -139,6 +153,9 @@ class ExperimentState(str, Enum):
 # ============================================================
 
 sensor_lock = threading.Lock()
+health_metrics = HealthMetrics()
+camera_clock_gate = SourceClockGate("forward camera")
+lidar_clock_gate = SourceClockGate("LiDAR")
 
 latest_forward_frame: Optional[
     np.ndarray
@@ -151,7 +168,12 @@ latest_scan: Optional[
 latest_lidar_world_pose = None
 
 camera_sequence = 0
+camera_receipt_time = 0.0
+camera_source_stamp_ns = None
 scan_sequence = 0
+forward_processing_width = 640  # Gazebo regression mode; not IMX296 native resolution.
+camera_decode_errors = 0
+last_camera_error_report = 0.0
 
 
 # ============================================================
@@ -164,41 +186,36 @@ def on_forward_image(
 
     global latest_forward_frame
     global camera_sequence
+    global camera_receipt_time
+    global camera_source_stamp_ns
+    global camera_decode_errors, last_camera_error_report
+
+    received = time.monotonic()
 
     try:
 
-        image = np.frombuffer(
-            msg.data,
-            dtype=np.uint8,
-        )
-
-        image = image.reshape(
-            (
-                msg.height,
-                msg.width,
-                3,
-            )
-        )
-
-        image = cv2.cvtColor(
-            image,
-            cv2.COLOR_RGB2BGR,
-        )
+        image = decode_gazebo_bgr(msg, forward_processing_width)
 
     except Exception as exc:
-
-        print(
-            "[CAMERA] decode error:",
-            exc,
-        )
+        camera_decode_errors += 1
+        if received - last_camera_error_report >= 1.0:
+            print(f"[CAMERA] decode errors={camera_decode_errors}: {exc}")
+            last_camera_error_report = received
 
         return
 
+    health_metrics.observe("camera_decode", time.monotonic() - received)
+
     with sensor_lock:
+        source_stamp = gazebo_source_stamp_ns(msg)
+        if not camera_clock_gate.accept(source_stamp):
+            return
 
         latest_forward_frame = image
 
         camera_sequence += 1
+        camera_receipt_time = received
+        camera_source_stamp_ns = source_stamp
 
 
 # ============================================================
@@ -257,6 +274,7 @@ def on_lidar(
         angles_rad=angles,
         ranges_m=ranges,
         intensities=intensities,
+        no_return_is_clear=True,  # Gazebo ray sensor's documented adapter convention
         timestamp=time.monotonic(),
         range_min_m=float(
             msg.range_min
@@ -264,9 +282,13 @@ def on_lidar(
         range_max_m=float(
             msg.range_max
         ),
+        source_timestamp=gazebo_source_stamp_ns(msg),
+        source_clock="gazebo_sim_ns",
     )
 
     with sensor_lock:
+        if not lidar_clock_gate.accept(scan.source_timestamp):
+            return
 
         latest_scan = scan
         pose = msg.world_pose
@@ -277,6 +299,14 @@ def on_lidar(
         }
 
         scan_sequence += 1
+    health_metrics.observe("lidar_adapter", time.monotonic() - scan.timestamp)
+
+
+def detect_banner(detector, frame, **options):
+    started = time.monotonic()
+    result = detector.detect(frame, **options)
+    health_metrics.observe("banner_detect", time.monotonic() - started)
+    return result
 
 
 # ============================================================
@@ -304,14 +334,38 @@ class Telemetry:
     attitude_messages: int = 0
     relative_alt_m: Optional[float] = None
     relative_alt_time: float = 0.0
+    origin_lat_deg: Optional[float] = None
+    origin_lon_deg: Optional[float] = None
+    origin_alt_mm: Optional[int] = None
+    heartbeat_time: float = 0.0
+    mode: str = "UNKNOWN"
+    armed: bool = False
+    authority_revoked: bool = False
+    authority_started: bool = False
+    landed_state: Optional[int] = None
+    landed_time: float = 0.0
+    ekf_flags: int = 0
+    ekf_time: float = 0.0
+    prearm_ok: bool = False
+    prearm_time: float = 0.0
+    rejected_command: Optional[int] = None
+    rejection_time: float = 0.0
+    last_land_request: float = 0.0
+    ack_command: Optional[int] = None
+    ack_result: Optional[int] = None
+    ack_time: float = 0.0
+    pose_fault: Optional[str] = None
 
 
 telemetry = Telemetry()
+pose_integrity = PoseIntegrity()
 
 
 def coverage_entry_registered(pose_telemetry, cfg, now):
-    """Guard the fixed Gazebo field before advancing clear of the roof."""
+    """Guard the configured field frame before advancing clear of the roof."""
     n, e = pose_telemetry.x_m, pose_telemetry.y_m
+    if n is not None and e is not None and math.isfinite(n) and math.isfinite(e):
+        n,e = FieldFrame(cfg).point((n,e))
     return bool(
         n is not None and e is not None
         and math.isfinite(n) and math.isfinite(e)
@@ -319,6 +373,28 @@ def coverage_entry_registered(pose_telemetry, cfg, now):
         and cfg.e_min + cfg.clearance <= e <= cfg.e_max - cfg.clearance
         and 0 <= now - pose_telemetry.position_time <= LIDAR_POSE_MAX_AGE_S
     )
+
+
+def north_velocity_in_body(speed, yaw_rad):
+    """NED north-only velocity -> body forward/right (not FLU left)."""
+    if not math.isfinite(speed) or not math.isfinite(yaw_rad):
+        raise ValueError("Nonfinite field-advance velocity or heading")
+    return speed * math.cos(yaw_rad), -speed * math.sin(yaw_rad)
+
+
+def heading_velocity_in_body(speed, desired_yaw, actual_yaw):
+    if not all(map(math.isfinite,(speed,desired_yaw,actual_yaw))):
+        raise ValueError('Nonfinite field-advance command')
+    error=desired_yaw-actual_yaw
+    return speed*math.cos(error),speed*math.sin(error)
+
+
+def field_advance_health(pose_telemetry, cfg, now):
+    values = (pose_telemetry.z_m, pose_telemetry.vx_m_s,
+              pose_telemetry.vy_m_s, pose_telemetry.yaw_rad)
+    return (coverage_entry_registered(pose_telemetry, cfg, now)
+            and all(v is not None and math.isfinite(v) for v in values)
+            and 0 <= now - pose_telemetry.attitude_time <= .5)
 
 # The full simulator reaches the manager through MAVProxy's UDP fan-out.  Its
 # LOCAL_POSITION_NED packets normally arrive at 4 Hz unless explicitly raised,
@@ -335,7 +411,8 @@ def drain_mavlink(
     master,
 ) -> None:
 
-    while True:
+    # Bound callback work so a traffic burst cannot starve command expiry.
+    for _ in range(256):
 
         msg = master.recv_match(
             blocking=False,
@@ -347,11 +424,53 @@ def drain_mavlink(
         now = time.monotonic()
 
         kind = msg.get_type()
+        if (msg.get_srcSystem() != master.target_system
+                or msg.get_srcComponent() != master.target_component):
+            continue
 
-        if (
+        if kind == "HEARTBEAT":
+            telemetry.heartbeat_time = now
+            telemetry.mode = mavutil.mode_string_v10(msg)
+            telemetry.armed = bool(msg.base_mode &
+                mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+            if telemetry.authority_started and (
+                    telemetry.mode != "GUIDED" or not telemetry.armed):
+                telemetry.authority_revoked = True
+        elif kind == "EXTENDED_SYS_STATE":
+            telemetry.landed_state = int(msg.landed_state)
+            telemetry.landed_time = now
+        elif kind == "EKF_STATUS_REPORT":
+            telemetry.ekf_flags = int(msg.flags)
+            telemetry.ekf_time = now
+        elif kind == "SYS_STATUS":
+            prearm_bit = mavutil.mavlink.MAV_SYS_STATUS_PREARM_CHECK
+            telemetry.prearm_ok = bool(
+                int(msg.onboard_control_sensors_present) & prearm_bit
+                and int(msg.onboard_control_sensors_health) & prearm_bit)
+            telemetry.prearm_time = now
+        elif kind == "COMMAND_ACK":
+            telemetry.ack_command = int(msg.command)
+            telemetry.ack_result = int(msg.result)
+            telemetry.ack_time = now
+            if int(msg.result) not in (
+                    mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                    mavutil.mavlink.MAV_RESULT_IN_PROGRESS):
+                telemetry.rejected_command = int(msg.command)
+                telemetry.rejection_time = now
+
+        elif (
             kind
             == "LOCAL_POSITION_NED"
         ):
+
+            boot_s = float(msg.time_boot_ms) / 1000.0
+            xyz = (float(msg.x), float(msg.y), float(msg.z))
+            velocity = (float(msg.vx), float(msg.vy), float(msg.vz))
+            if not pose_integrity.observe(boot_s, xyz, velocity):
+                if pose_integrity.failure is not None:
+                    telemetry.pose_fault = pose_integrity.failure
+                    telemetry.position_time = 0.0
+                continue
 
             telemetry.x_m = float(
                 msg.x
@@ -361,7 +480,7 @@ def drain_mavlink(
                 msg.y
             )
 
-            telemetry.position_boot_s = float(msg.time_boot_ms) / 1000.0
+            telemetry.position_boot_s = boot_s
             telemetry.z_m = float(msg.z)
             telemetry.vz_m_s = float(msg.vz)
             telemetry.vx_m_s = float(msg.vx)
@@ -392,6 +511,16 @@ def drain_mavlink(
         elif kind == "GLOBAL_POSITION_INT":
             telemetry.relative_alt_m = float(msg.relative_alt) * 0.001
             telemetry.relative_alt_time = now
+        elif kind == 'GPS_GLOBAL_ORIGIN':
+            new_origin=(int(msg.latitude),int(msg.longitude),int(msg.altitude))
+            old_origin=(telemetry.origin_lat_deg,telemetry.origin_lon_deg,
+                        telemetry.origin_alt_mm)
+            if old_origin[0] is not None and new_origin != (
+                    round(old_origin[0]*1e7),round(old_origin[1]*1e7),old_origin[2]):
+                telemetry.pose_fault='FC local origin changed during mission'
+            telemetry.origin_lat_deg=new_origin[0]*1e-7
+            telemetry.origin_lon_deg=new_origin[1]*1e-7
+            telemetry.origin_alt_mm=new_origin[2]
 
 
 # ============================================================
@@ -478,11 +607,63 @@ def current_attitude() -> Optional[
 # CAMERA MAVLINK CONTROL
 # ============================================================
 
+active_commands: Optional[CommandService] = None
+mav_tx_lock = threading.RLock()
+
+
+@contextmanager
+def mav_tx_guard(timeout_s=0.2):
+    if not mav_tx_lock.acquire(timeout=timeout_s):
+        raise RuntimeError("MAVLink transmit lock busy beyond bounded wait")
+    try:
+        yield
+    finally:
+        mav_tx_lock.release()
+
+
+def bounded_mavlink_call(send, *args):
+    with mav_tx_guard():
+        return send(*args)
+
+
+def transmit_body_velocity(master, vx, vy, vz, yaw_rate):
+    """Only the command worker calls this while it owns navigation output."""
+    with mav_tx_guard():
+        master.mav.set_position_target_local_ned_send(
+            int(time.monotonic() * 1000) & 0xFFFFFFFF,
+            master.target_system, master.target_component,
+            mavutil.mavlink.MAV_FRAME_BODY_NED, 1479,
+            0., 0., 0., vx, vy, vz, 0., 0., 0., 0., yaw_rate)
+
+
+def transmit_mission_velocity(master, vx, vy, vz, yaw_rate, frame='body'):
+    if frame == 'body':
+        transmit_body_velocity(master, vx, vy, vz, yaw_rate)
+    elif frame == 'local':
+        with mav_tx_guard():
+            master.mav.set_position_target_local_ned_send(
+                int(time.monotonic()*1000)&0xffffffff,
+                master.target_system, master.target_component,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED, 2503,
+                0,0,0,vx,vy,vz,0,0,0,yaw_rate,0)
+    else:
+        raise ValueError('Unsupported command frame')
+
+
+def stop_command_service():
+    global active_commands
+    service = active_commands
+    if service is not None:
+        service.stop()
+        active_commands = None
+
+
 def send_camera_velocity(
     master,
     vx: float,
     vy: float,
     vz: float,
+    source_timestamp=None,
 ) -> None:
 
     """
@@ -495,11 +676,15 @@ def send_camera_velocity(
         +Z = down
     """
 
+    if active_commands is not None:
+        active_commands.publish(vx, vy, vz, source_timestamp=source_timestamp)
+        return
+
     type_mask = int(
         0b0000111111000111
     )
 
-    master.mav.send(
+    bounded_mavlink_call(master.mav.send,
 
         mavutil.mavlink.
         MAVLink_set_position_target_local_ned_message(
@@ -557,6 +742,7 @@ def send_stop(
 def send_native_velocity(
     master,
     command: BodyVelocity,
+    source_timestamp=None,
 ) -> None:
 
     """
@@ -588,9 +774,15 @@ def send_native_velocity(
         USE yaw-rate
     """
 
+    if active_commands is not None:
+        active_commands.publish(command.vx_m_s, -command.vy_m_s,
+                                -command.vz_m_s, -command.yaw_rate_rad_s,
+                                source_timestamp=source_timestamp)
+        return
+
     type_mask = 1479
 
-    master.mav.set_position_target_local_ned_send(
+    bounded_mavlink_call(master.mav.set_position_target_local_ned_send,
 
         int(
             time.monotonic()
@@ -647,27 +839,93 @@ def request_land(
     master,
 ) -> None:
 
+    stop_command_service()
+
     print(
         "[SAFETY] LAND requested"
     )
 
-    master.mav.command_long_send(
+    with mav_tx_guard():
+        master.mav.command_long_send(
+            master.target_system, master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        )
+    telemetry.last_land_request = time.monotonic()
 
-        master.target_system,
-        master.target_component,
 
-        mavutil.mavlink.
-        MAV_CMD_NAV_LAND,
+def confirm_terminal_land(master, timeout_s=3.0):
+    """Require fresh LAND mode; an accepted ACK alone is not a mode change."""
+    if telemetry.mode == "LAND" and time.monotonic() - telemetry.heartbeat_time <= 2.5:
+        return True
+    if telemetry.last_land_request <= 0:
+        request_land(master)
+    deadline = time.monotonic() + timeout_s
+    retries = 0
+    while time.monotonic() < deadline:
+        drain_mavlink(master)
+        now = time.monotonic()
+        if (telemetry.mode == "LAND"
+                and 0 <= now - telemetry.heartbeat_time <= 2.5):
+            return True
+        if (telemetry.ack_command == mavutil.mavlink.MAV_CMD_NAV_LAND
+                and telemetry.ack_time >= telemetry.last_land_request
+                and telemetry.ack_result not in (
+                    mavutil.mavlink.MAV_RESULT_ACCEPTED,
+                    mavutil.mavlink.MAV_RESULT_IN_PROGRESS)):
+            return False
+        if telemetry.mode not in ("GUIDED", "LAND") or (
+                telemetry.authority_revoked and telemetry.mode != "LAND"):
+            return False  # Pilot owns the aircraft or command changed mode.
+        if now - telemetry.last_land_request >= 1.5 and retries < 1:
+            request_land(master)
+            retries += 1
+        time.sleep(.05)
+    return False
 
-        0,
 
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+def request_startup_action(master, action, takeoff_altitude_m):
+    """One normal ArduCopter action, issued only by StartupController."""
+    if action == "MODE":
+        modes = master.mode_mapping()
+        if not modes or "GUIDED" not in modes:
+            raise RuntimeError("GUIDED mode unavailable from flight controller")
+        command = mavutil.mavlink.MAV_CMD_DO_SET_MODE
+        params = (mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                  int(modes["GUIDED"]), 0, 0, 0, 0, 0)
+    elif action == "ARM":
+        command = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+        params = (1, 0, 0, 0, 0, 0, 0)
+    elif action == "TAKEOFF":
+        command = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
+        params = (0, 0, 0, 0, 0, 0, takeoff_altitude_m)
+    else:
+        raise ValueError(f"Unsupported startup action {action}")
+    with mav_tx_guard():
+        master.mav.command_long_send(
+            master.target_system, master.target_component, command, 0, *params)
+
+
+def startup_feedback(started):
+    with sensor_lock:
+        cam_stamp = camera_receipt_time
+        scan_stamp = latest_scan.timestamp if scan_valid(latest_scan) else 0.0
+    position = (telemetry.x_m, telemetry.y_m, telemetry.z_m)
+    velocity = (telemetry.vx_m_s, telemetry.vy_m_s, telemetry.vz_m_s)
+    return StartupFeedback(
+        heartbeat_time=telemetry.heartbeat_time, mode=telemetry.mode,
+        armed=telemetry.armed, landed_state=telemetry.landed_state,
+        landed_time=telemetry.landed_time, ekf_flags=telemetry.ekf_flags,
+        ekf_time=telemetry.ekf_time, position_time=telemetry.position_time,
+        attitude_time=telemetry.attitude_time,
+        relative_alt_time=telemetry.relative_alt_time,
+        relative_alt_m=telemetry.relative_alt_m,
+        position_m=position if all(v is not None for v in position) else None,
+        velocity_m_s=velocity if all(v is not None for v in velocity) else None,
+        camera_time=cam_stamp, lidar_time=scan_stamp,
+        rejected_command=(telemetry.rejected_command if
+                          telemetry.rejection_time >= started else None),
+        prearm_ok=telemetry.prearm_ok, prearm_time=telemetry.prearm_time,
     )
 
 
@@ -690,25 +948,12 @@ def request_message_interval(
         )
     )
 
-    master.mav.command_long_send(
-
-        master.target_system,
-        master.target_component,
-
-        mavutil.mavlink.
-        MAV_CMD_SET_MESSAGE_INTERVAL,
-
-        0,
-
-        message_id,
-        interval_us,
-
-        0,
-        0,
-        0,
-        0,
-        0,
-    )
+    with mav_tx_guard():
+        master.mav.command_long_send(
+            master.target_system, master.target_component,
+            mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
+            message_id, interval_us, 0, 0, 0, 0, 0,
+        )
 
 
 def request_pose_telemetry(
@@ -737,21 +982,26 @@ def request_pose_telemetry(
         mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT,
         hz,
     )
+    request_message_interval(master, mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT, 5.0)
+    request_message_interval(master, mavutil.mavlink.MAVLINK_MSG_ID_GPS_GLOBAL_ORIGIN, 1.0)
+    request_message_interval(master, mavutil.mavlink.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, 5.0)
+    request_message_interval(master, mavutil.mavlink.MAVLINK_MSG_ID_SYS_STATUS, 2.0)
     stream_hz = max(1, int(round(hz)))
-    master.mav.request_data_stream_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_DATA_STREAM_POSITION,
-        stream_hz,
-        1,
-    )
-    master.mav.request_data_stream_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
-        stream_hz,
-        1,
-    )
+    with mav_tx_guard():
+        master.mav.request_data_stream_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_DATA_STREAM_POSITION,
+            stream_hz,
+            1,
+        )
+        master.mav.request_data_stream_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_DATA_STREAM_EXTRA1,
+            stream_hz,
+            1,
+        )
 
 
 # ============================================================
@@ -773,10 +1023,17 @@ def clamp(
     )
 
 
-def create_corridor_runner(enter_distance):
+def create_corridor_runner(enter_distance, vehicle_width_m=0.65,
+                           passage_side_margin_m=0.25,
+                           max_cross_track_m=0.80,
+                           max_yaw_error_deg=40.0):
     """Longer stage deadlines for the slow local Gazebo simulation."""
     runner = NativeMissionRunner(config=MissionRunnerConfig(
         enter_corridor_distance_m=enter_distance,
+        vehicle_width_m=vehicle_width_m,
+        passage_side_margin_m=passage_side_margin_m,
+        enter_max_cross_track_m=max_cross_track_m,
+        enter_max_yaw_error_deg=max_yaw_error_deg,
         enter_corridor_max_pose_age_s=LIDAR_POSE_MAX_AGE_S,
         enter_corridor_pose_timeout_s=6.0,
         pre_entry_hold_timeout_s=32.0,
@@ -786,6 +1043,8 @@ def create_corridor_runner(enter_distance):
         enter_corridor_timeout_s=60.0,
         reassess_hard_timeout_s=48.0,
     ))
+    runner.exit.config.max_cross_track_m = max_cross_track_m
+    runner.exit.config.max_yaw_error_deg = max_yaw_error_deg
     runner.pre_entry.config.acquire_timeout_s = 32.0
     runner.pre_entry.config.alignment_timeout_s = 60.0
     runner.reassess.config.recovery_timeout_s = 32.0
@@ -803,6 +1062,7 @@ def create_corridor_runner(enter_distance):
 # ============================================================
 
 def main() -> int:
+    global active_commands, forward_processing_width
 
     parser = argparse.ArgumentParser()
 
@@ -818,6 +1078,10 @@ def main() -> int:
             "udpin:0.0.0.0:14552"
         ),
     )
+    parser.add_argument("--start-mission", action="store_true",
+                        help="Explicitly authorize normal GUIDED arm and autonomous takeoff")
+    parser.add_argument("--takeoff-altitude", type=float, default=3.0,
+                        help="Gazebo profile HOME-relative takeoff height, metres")
 
 
     # --------------------------------------------------------
@@ -831,6 +1095,14 @@ def main() -> int:
 
         default=0.75,
     )
+    parser.add_argument("--vehicle-width", type=float, default=0.65,
+                        help="Provisional maximum horizontal aircraft width, metres")
+    parser.add_argument("--passage-side-margin", type=float, default=0.25,
+                        help="Provisional clearance required on each side, metres")
+    parser.add_argument("--max-path-cross-track", type=float, default=0.80,
+                        help="Provisional straight entry/exit pose drift gate, metres")
+    parser.add_argument("--max-path-yaw-error", type=float, default=40.0,
+                        help="Provisional straight entry/exit yaw gate, degrees")
 
 
     # --------------------------------------------------------
@@ -844,6 +1116,29 @@ def main() -> int:
 
         default=0.50,
     )
+    parser.add_argument("--camera-phase-timeout", type=float, default=120.0,
+                        help="Provisional total search/centre/approach deadline, seconds")
+    parser.add_argument("--camera-travel-limit", type=float, default=10.0,
+                        help="Provisional 3D displacement bound from first valid camera-phase pose")
+    parser.add_argument("--camera-max-age", type=float, default=0.5,
+                        help="Provisional maximum decoded frame receipt age, seconds")
+    parser.add_argument("--camera-processing-width", type=int, default=640,
+                        help="Maximum forward-camera processing width; 640 preserves Gazebo baseline")
+    parser.add_argument("--no-gui", action="store_true",
+                        help="Disable the optional out-of-process camera preview")
+    parser.add_argument("--green-hsv-low", type=int, nargs=3, default=(45, 100, 80),
+                        metavar=("H", "S", "V"), help="Provisional Gazebo banner HSV lower bound")
+    parser.add_argument("--green-hsv-high", type=int, nargs=3, default=(75, 255, 255),
+                        metavar=("H", "S", "V"), help="Provisional Gazebo banner HSV upper bound")
+    parser.add_argument("--banner-min-area-640x480", type=float, default=700.,
+                        help="Banner contour area threshold at 640x480; scales with processing size")
+    parser.add_argument("--banner-morph-kernel", type=int, default=5,
+                        help="Odd-pixel green-mask opening kernel, Gazebo baseline 5")
+    parser.add_argument("--banner-aspect-range", type=float, nargs=2,
+                        default=(0.8, 5.0), metavar=("MIN", "MAX"),
+                        help="Allowed banner contour aspect ratio during search/centering")
+    parser.add_argument("--banner-min-extent", type=float, default=0.15,
+                        help="Minimum green contour fill fraction")
 
 
     # --------------------------------------------------------
@@ -925,15 +1220,44 @@ def main() -> int:
         help="Persistent directory for the first real PRE_ENTRY LiDAR capture",
     )
     args = parser.parse_args()
+    if not args.start_mission:
+        parser.error("--start-mission is required for arm and takeoff")
+    try:
+        startup_config = StartupConfig(takeoff_altitude_m=args.takeoff_altitude)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        banner_guard_config = BannerGuardConfig(
+            timeout_s=args.camera_phase_timeout,
+            max_displacement_m=args.camera_travel_limit,
+            frame_max_age_s=args.camera_max_age,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if not math.isfinite(args.entrance_commit_range) or args.entrance_commit_range <= 0:
         parser.error("--entrance-commit-range must be finite and positive")
     if not math.isfinite(args.pre_entry_descent) or args.pre_entry_descent <= 0:
         parser.error("--pre-entry-descent must be finite and positive")
     if args.banner_loss_frames < 1:
         parser.error("--banner-loss-frames must be at least 1")
+    try:
+        MissionRunnerConfig(
+            enter_corridor_distance_m=args.enter_distance,
+            vehicle_width_m=args.vehicle_width,
+            passage_side_margin_m=args.passage_side_margin,
+            enter_max_cross_track_m=args.max_path_cross_track,
+            enter_max_yaw_error_deg=args.max_path_yaw_error,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.camera_processing_width <= 0:
+        parser.error("--camera-processing-width must be positive")
+    forward_processing_width = args.camera_processing_width
     if not math.isfinite(args.coverage_max_wall_seconds) or args.coverage_max_wall_seconds <= 0:
         parser.error("--coverage-max-wall-seconds must be finite and positive")
     coverage_cfg = CoverageConfig.load(args.coverage_config)
+    if coverage_cfg.body_radius < args.vehicle_width / 2:
+        parser.error("coverage body_radius is smaller than half corridor vehicle width")
 
 
 
@@ -958,7 +1282,7 @@ def main() -> int:
     print()
 
     print(
-        "BANNER_SEARCH"
+        "PREFLIGHT -> GUIDED -> ARM -> TAKEOFF -> BANNER_SEARCH"
     )
 
     print(
@@ -974,8 +1298,8 @@ def main() -> int:
     )
 
     print(
-        f"APPROACH_CORRIDOR -> PANEL LOST / {args.entrance_commit_range:g} m RANGE -> "
-        f"DESCEND {args.pre_entry_descent:g} m"
+        f"APPROACH_CORRIDOR -> VERIFIED STAGING at {args.entrance_commit_range:g} m limit -> "
+        f"DESCEND {args.pre_entry_descent:g} m -> WALL READINESS"
     )
 
     print(
@@ -1030,7 +1354,16 @@ def main() -> int:
         )
     )
 
-    master.wait_heartbeat()
+    initial_heartbeat = master.wait_heartbeat(timeout=10)
+    if initial_heartbeat is None:
+        master.close()
+        raise RuntimeError("Flight-controller heartbeat timeout")
+    master.target_system = initial_heartbeat.get_srcSystem()
+    master.target_component = initial_heartbeat.get_srcComponent()
+    telemetry.heartbeat_time = time.monotonic()
+    telemetry.mode = mavutil.mode_string_v10(initial_heartbeat)
+    telemetry.armed = bool(initial_heartbeat.base_mode &
+        mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 
     print(
         "[MAVLINK] heartbeat received:",
@@ -1095,19 +1428,23 @@ def main() -> int:
     # CAMERA DETECTOR
     # ========================================================
 
-    banner_detector = (
-        HybridBannerDetector()
+    banner_detector = HybridBannerDetector(
+        lower_green=args.green_hsv_low,
+        upper_green=args.green_hsv_high,
+        min_area_at_640x480=args.banner_min_area_640x480,
+        morph_kernel_size=args.banner_morph_kernel,
+        aspect_ratio_bounds=args.banner_aspect_range,
+        min_extent=args.banner_min_extent,
     )
+    preview = PreviewService(enabled=not args.no_gui)
+    snapshot_service = SnapshotService()
 
 
     # ========================================================
     # STATE
     # ========================================================
 
-    state = (
-        ExperimentState.
-        BANNER_SEARCH
-    )
+    state = ExperimentState.STARTUP
 
 
     # Actual corridor FSM.
@@ -1127,6 +1464,7 @@ def main() -> int:
     last_scan_sequence = -1
 
     last_diag = 0.0
+    last_metrics = time.monotonic()
 
     previous_native_state = None
     descent = None
@@ -1138,18 +1476,33 @@ def main() -> int:
     preentry_snapshot_saved = False
     coverage_climb = None
     coverage_started = False
+    coverage_invoked = False
     field_advance_started = 0.0
+    field_advance_target = None
+    field_advance_heading = None
     field_advance_boot_start = 0.0
+    banner_guard = None
+    startup = StartupController(time.monotonic(), startup_config)
+    staging_envelope = StagingEnvelope()
+    readiness = EntranceReadiness()
+    staging_started = 0.0
+    staging_boot_start = 0.0
+    approach_last_confirmed = 0.0
+    mission_arm_requested = False
+    corridor_home_altitude = None
 
 
     print()
 
     print(
         "[EXPERIMENT] START -> "
-        "BANNER_SEARCH"
+        "STARTUP"
     )
 
     print()
+
+    async_console = AsyncLogStream(sys.stdout)
+    sys.stdout = async_console
 
 
     # ========================================================
@@ -1172,6 +1525,69 @@ def main() -> int:
                 time.monotonic()
             )
 
+            with sensor_lock:
+                source_clock_fault = (camera_clock_gate.failure
+                                      or lidar_clock_gate.failure)
+            if source_clock_fault and not coverage_started:
+                stop_command_service()
+                print(f"[SENSOR CLOCK] ABORT: {source_clock_fault}")
+                state = ExperimentState.ABORT
+                continue
+
+            if state not in (ExperimentState.STARTUP, ExperimentState.ABORT,
+                             ExperimentState.COMPLETE) and not coverage_started:
+                if (telemetry.authority_revoked or telemetry.mode != "GUIDED"
+                        or not telemetry.armed
+                        or telemetry.pose_fault is not None
+                        or now - telemetry.heartbeat_time > 2.5
+                        or now - telemetry.ekf_time > 1.5
+                        or not telemetry.ekf_flags & (8 | 16)
+                        or now - telemetry.position_time > LIDAR_POSE_MAX_AGE_S
+                        or not attitude_valid(current_attitude())):
+                    stop_command_service()
+                    print("[AUTHORITY] mission motion cancelled: flight/estimator health changed"
+                          f"; pose_fault={telemetry.pose_fault}")
+                    state = ExperimentState.ABORT
+                    continue
+                if active_commands is not None and not active_commands.healthy():
+                    print(f"[OUTPUT] command worker failed: {active_commands.failure}")
+                    state = ExperimentState.ABORT
+                    continue
+                if state in (ExperimentState.LIDAR_CORRIDOR,
+                             ExperimentState.ADVANCE_TO_FIELD):
+                    height_ok = (corridor_home_altitude is not None
+                                 and telemetry.relative_alt_m is not None
+                                 and math.isfinite(telemetry.relative_alt_m)
+                                 and 0 <= now - telemetry.relative_alt_time <= 1.0
+                                 and abs(telemetry.relative_alt_m
+                                         - corridor_home_altitude) <= .30)
+                    if not height_ok:
+                        print("[ALTITUDE] corridor/roof-clear height envelope lost")
+                        state = ExperimentState.ABORT
+                        continue
+
+            if state in (ExperimentState.BANNER_SEARCH,
+                         ExperimentState.CAMERA_CORRIDOR_CENTER,
+                         ExperimentState.APPROACH_CORRIDOR):
+                with sensor_lock:
+                    frame_stamp = camera_receipt_time
+                position = (telemetry.x_m, telemetry.y_m, telemetry.z_m)
+                if any(v is None for v in position):
+                    position = None
+                may_move, failure = banner_guard.check(
+                    now, frame_stamp, position, telemetry.position_time,
+                    attitude_valid(current_attitude()))
+                if not may_move:
+                    send_stop(master)
+                    centered_frames = 0
+                    if failure:
+                        print(f"[CAMERA SAFETY] {failure}")
+                        request_land(master)
+                        state = ExperimentState.ABORT
+                        break
+                    time.sleep(0.02)
+                    continue
+
 
             # Another GCS can overwrite the startup interval request. Retry
             # only when received telemetry is slow, with a bounded request rate.
@@ -1187,6 +1603,35 @@ def main() -> int:
                 last_stream_retry = now
 
             # =================================================
+            # AUTONOMOUS STARTUP
+            # =================================================
+
+            if state == ExperimentState.STARTUP:
+                previous = startup.state
+                action = startup.step(startup_feedback(startup.state_since), now)
+                if startup.state != previous:
+                    print(f"[STARTUP] {previous} -> {startup.state}")
+                if action is not None:
+                    request_startup_action(master, action, startup_config.takeoff_altitude_m)
+                    if action == "ARM":
+                        mission_arm_requested = True
+                    print(f"[STARTUP] requested {action}")
+                if startup.state == "ABORT":
+                    print(f"[STARTUP] ABORT: {startup.reason}")
+                    state = ExperimentState.ABORT
+                elif startup.state == "READY":
+                    telemetry.authority_started = True
+                    active_commands = CommandService(
+                        lambda vx, vy, vz, yaw, frame='body':
+                            transmit_mission_velocity(master, vx, vy, vz, yaw, frame))
+                    active_commands.start()
+                    banner_guard = BannerGuard(now, banner_guard_config)
+                    state = ExperimentState.BANNER_SEARCH
+                    print("[STARTUP] settled takeoff -> BANNER_SEARCH")
+                time.sleep(0.02)
+                continue
+
+            # =================================================
             # STATE 1
             # BANNER SEARCH
             # =================================================
@@ -1199,21 +1644,17 @@ def main() -> int:
             ):
 
                 with sensor_lock:
-
-                    frame = (
-                        None
-                        if latest_forward_frame
-                        is None
-                        else
-                        latest_forward_frame.copy()
-                    )
-
                     cam_seq = (
                         camera_sequence
                     )
+                    cam_frame_stamp = camera_receipt_time
+                    # Callback replaces the array; detector never mutates it.
+                    frame = (latest_forward_frame
+                             if cam_seq != last_camera_sequence
+                             and latest_forward_frame is not None else None)
 
 
-                if frame is None:
+                if latest_forward_frame is None:
 
                     send_stop(
                         master
@@ -1248,8 +1689,8 @@ def main() -> int:
                     )
 
                     result = (
-                        banner_detector.detect(
-                            frame
+                        detect_banner(banner_detector,
+                            frame, debug=preview.enabled
                         )
                     )
 
@@ -1276,6 +1717,7 @@ def main() -> int:
                             ),
 
                             vz=0.0,
+                            source_timestamp=cam_frame_stamp,
                         )
 
 
@@ -1330,40 +1772,12 @@ def main() -> int:
                         print()
 
 
-                    debug = (
-                        result[
-                            "debug_frame"
-                        ]
-                    )
-
-                    cv2.putText(
-
-                        debug,
-
-                        "STATE: BANNER_SEARCH",
-
-                        (
-                            10,
-                            145,
-                        ),
-
-                        cv2.FONT_HERSHEY_SIMPLEX,
-
-                        0.55,
-
-                        (
-                            255,
-                            255,
-                            255,
-                        ),
-
-                        2,
-                    )
-
-                    cv2.imshow(
-                        "Experimental Corridor Camera",
-                        debug,
-                    )
+                    if preview.enabled:
+                        debug = result["debug_frame"]
+                        cv2.putText(debug, "STATE: BANNER_SEARCH", (10, 145),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                    (255, 255, 255), 2)
+                        preview.submit(debug)
 
 
             # =================================================
@@ -1379,21 +1793,16 @@ def main() -> int:
             ):
 
                 with sensor_lock:
-
-                    frame = (
-                        None
-                        if latest_forward_frame
-                        is None
-                        else
-                        latest_forward_frame.copy()
-                    )
-
                     cam_seq = (
                         camera_sequence
                     )
+                    cam_frame_stamp = camera_receipt_time
+                    frame = (latest_forward_frame
+                             if cam_seq != last_camera_sequence
+                             and latest_forward_frame is not None else None)
 
 
-                if frame is None:
+                if latest_forward_frame is None:
 
                     send_stop(
                         master
@@ -1412,8 +1821,8 @@ def main() -> int:
                     )
 
                     result = (
-                        banner_detector.detect(
-                            frame
+                        detect_banner(banner_detector,
+                            frame, debug=preview.enabled
                         )
                     )
 
@@ -1447,13 +1856,13 @@ def main() -> int:
                             result[
                                 "error_x"
                             ]
-                        )
+                        ) * 640.0 / frame.shape[1]
 
                         error_y = float(
                             result[
                                 "error_y"
                             ]
-                        )
+                        ) * 480.0 / frame.shape[0]
 
 
                         # Target right -> move right.
@@ -1491,6 +1900,7 @@ def main() -> int:
                             vy=vy,
 
                             vz=vz,
+                            source_timestamp=cam_frame_stamp,
                         )
 
 
@@ -1583,7 +1993,7 @@ def main() -> int:
                             )
 
                             print(
-                                " Panel loss stops approach and starts the LiDAR handoff."
+                            " Panel loss stops approach; only persistent wall geometry grants LiDAR control."
                             )
 
                             print(
@@ -1593,95 +2003,89 @@ def main() -> int:
                             print()
 
 
-                    debug = (
-                        result[
-                            "debug_frame"
-                        ]
-                    )
-
-                    cv2.putText(
-
-                        debug,
-
-                        (
-                            "STATE: "
-                            "CAMERA_CORRIDOR_CENTER"
-                        ),
-
-                        (
-                            10,
-                            145,
-                        ),
-
-                        cv2.FONT_HERSHEY_SIMPLEX,
-
-                        0.55,
-
-                        (
-                            255,
-                            255,
-                            255,
-                        ),
-
-                        2,
-                    )
-
-                    cv2.imshow(
-                        "Experimental Corridor Camera",
-                        debug,
-                    )
+                    if preview.enabled:
+                        debug = result["debug_frame"]
+                        cv2.putText(debug, "STATE: CAMERA_CORRIDOR_CENTER", (10, 145),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                    (255, 255, 255), 2)
+                        preview.submit(debug)
 
 
-            # Confirmed panel loss ends camera authority permanently.
+            # Camera loss is never evidence of arrival.
             elif state == ExperimentState.APPROACH_CORRIDOR:
                 with sensor_lock:
                     scan = latest_scan
-                    frame = (None if latest_forward_frame is None
-                             else latest_forward_frame.copy())
                     cam_seq = camera_sequence
+                    cam_frame_stamp = camera_receipt_time
+                    frame = (latest_forward_frame
+                             if cam_seq != last_camera_sequence
+                             and latest_forward_frame is not None else None)
 
                 if scan is None or scan.age_s > 0.30:
                     send_stop(master)
                     time.sleep(0.02)
                     continue
 
-                front = panel_front_distance(scan)
-                if front is not None and front <= args.entrance_commit_range:
+                front = sector_clearance(scan, half_cone_deg=10.)
+                if front is None:
                     send_stop(master)
-                    descent = None
-                    descent_started = now
-                    state = ExperimentState.DESCEND_BEFORE_PRE_ENTRY
-                    print(f"[APPROACH] front={front:.2f} m: camera OFF "
-                          f"-> DESCEND_BEFORE_PRE_ENTRY ({args.pre_entry_descent:g} m)")
+                    time.sleep(0.02)
+                    continue
+                if front <= args.entrance_commit_range:
+                    send_stop(master)
+                    staging_ok = (
+                        staging_envelope.contains(
+                            telemetry.x_m, telemetry.y_m, telemetry.relative_alt_m)
+                        and 0 <= now - telemetry.relative_alt_time <= 1.0
+                        and telemetry.relative_alt_m - args.pre_entry_descent
+                        >= staging_envelope.min_home_alt_m
+                        and attitude_valid(current_attitude())
+                        and current_pose() is not None
+                        and 0 <= now - approach_last_confirmed <= .5)
+                    if staging_ok:
+                        descent = None
+                        descent_started = now
+                        staging_started = now
+                        staging_boot_start = telemetry.position_boot_s
+                        readiness.reset()
+                        state = ExperimentState.DESCEND_BEFORE_PRE_ENTRY
+                        print(f"[APPROACH] {front:.2f} m hard limit; verified staging region -> "
+                              f"DESCEND {args.pre_entry_descent:g} m, then require wall readiness")
+                    elif now - last_diag >= .5:
+                        print("[APPROACH] hard limit; holding for recent panel and safe staging pose")
+                        last_diag = now
                     continue
 
-                if frame is None:
+                if latest_forward_frame is None:
                     send_stop(master)
                 elif cam_seq != last_camera_sequence:
                     last_camera_sequence = cam_seq
-                    result = banner_detector.detect(frame, relaxed_approach=True)
+                    result = detect_banner(banner_detector, frame,
+                                           relaxed_approach=True,
+                                           debug=preview.enabled)
                     approach_detection_diag = (
                         f"detected={result['detected']} area={result['area']:.0f}px2 "
                         f"largest={result['largest_area']:.0f}px2 clipped={result['clipped']} "
                         f"reason={result['rejection_reason']}")
                     if result["detected"]:
                         banner_lost_frames = 0
-                        vy = clamp(float(result["error_x"]) * args.camera_gain,
+                        approach_last_confirmed = now
+                        vy = clamp(float(result["error_x"]) * 640.0 / frame.shape[1]
+                                   * args.camera_gain,
                                    -args.camera_max_speed, args.camera_max_speed)
-                        vz = clamp(float(result["error_y"]) * args.camera_gain,
+                        vz = clamp(float(result["error_y"]) * 480.0 / frame.shape[0]
+                                   * args.camera_gain,
                                    -args.camera_max_speed, args.camera_max_speed)
-                        send_camera_velocity(master, abs(args.approach_speed), vy, vz)
+                        send_camera_velocity(master, abs(args.approach_speed), vy, vz,
+                                             source_timestamp=cam_frame_stamp)
                     else:
                         banner_lost_frames += 1
                         send_stop(master)
                         if banner_lost_frames >= args.banner_loss_frames:
-                            descent = None
-                            descent_started = now
-                            state = ExperimentState.DESCEND_BEFORE_PRE_ENTRY
-                            print(f"[APPROACH] loss reason: {approach_detection_diag}; front={front}")
-                            print("[APPROACH] panel lost: camera OFF, forward STOP "
-                                  f"-> DESCEND_BEFORE_PRE_ENTRY ({args.pre_entry_descent:g} m)")
-                    cv2.imshow("Experimental Corridor Camera", result["debug_frame"])
+                            # Continue stopped and allow bounded reacquisition.
+                            # The phase deadline is intentionally not reset.
+                            approach_detection_diag += "; holding for reacquisition"
+                    preview.submit(result["debug_frame"])
 
                 if now - last_diag >= 0.5:
                     range_text = "unavailable" if front is None else f"{front:.2f}m"
@@ -1692,6 +2096,16 @@ def main() -> int:
                     last_diag = now
 
             elif state == ExperimentState.DESCEND_BEFORE_PRE_ENTRY:
+                if (now - staging_started > 120.0
+                        or telemetry.position_boot_s < staging_boot_start
+                        or not staging_envelope.contains(
+                            telemetry.x_m, telemetry.y_m, telemetry.relative_alt_m)
+                        or not 0 <= now - telemetry.relative_alt_time <= 1.0
+                        or not attitude_valid(current_attitude())):
+                    send_stop(master)
+                    print("[STAGING] ABORT: pose, height, attitude, or time envelope lost")
+                    state = ExperimentState.ABORT
+                    continue
                 # NativeMissionRunner is deliberately not constructed until
                 # descent finishes: PRE_ENTRY timers cannot run during descent.
                 if descent is None:
@@ -1750,11 +2164,36 @@ def main() -> int:
 
             elif state == ExperimentState.HOVER_BEFORE_PRE_ENTRY:
                 send_stop(master)
+                with sensor_lock:
+                    staging_scan = latest_scan
+                    staging_sequence = scan_sequence
+                staging_pose = current_pose()
+                staging_attitude = current_attitude()
+                if (now - staging_started > 120.0
+                        or telemetry.position_boot_s < staging_boot_start
+                        or not staging_envelope.contains(
+                            telemetry.x_m, telemetry.y_m, telemetry.relative_alt_m)
+                        or not 0 <= now - telemetry.relative_alt_time <= 1.0):
+                    print("[STAGING] ABORT: staging envelope or deadline lost")
+                    state = ExperimentState.ABORT
+                    continue
+                if (staging_scan is None or staging_scan.age_s > .30
+                        or not pose_valid(staging_pose, .5)
+                        or not attitude_valid(staging_attitude)):
+                    readiness.reset()
+                else:
+                    readiness.observe(staging_sequence, staging_scan,
+                                      staging_attitude, staging_pose)
+                wall_ready = (readiness.count >= readiness.required_scans
+                              and staging_scan is not None
+                              and staging_scan.age_s <= .30
+                              and attitude_valid(staging_attitude)
+                              and pose_valid(staging_pose, .5))
                 age = now - telemetry.position_time
                 values = (telemetry.z_m, telemetry.vx_m_s,
                           telemetry.vy_m_s, telemetry.vz_m_s)
                 valid = all(v is not None and math.isfinite(v) for v in values)
-                if (now - hover_started >= 180.0 or age > 3.5
+                if (now - hover_started >= 90.0 or age > 3.5
                         or telemetry.position_boot_s < hover_boot_start):
                     print("[HOVER] ABORT: hover timeout, telemetry loss or clock reset")
                     state = ExperimentState.ABORT
@@ -1771,12 +2210,18 @@ def main() -> int:
                 else:
                     if hover_stable_since is None:
                         hover_stable_since = telemetry.position_boot_s
-                    if telemetry.position_boot_s - hover_stable_since >= 2.0:
-                        corridor = create_corridor_runner(args.enter_distance)
+                    if (telemetry.position_boot_s - hover_stable_since >= 2.0
+                            and wall_ready):
+                        corridor = create_corridor_runner(
+                            args.enter_distance, args.vehicle_width,
+                            args.passage_side_margin, args.max_path_cross_track,
+                            args.max_path_yaw_error)
+                        corridor_home_altitude = telemetry.relative_alt_m
                         previous_native_state = None
                         last_scan_sequence = -1
                         state = ExperimentState.LIDAR_CORRIDOR
-                        print("[HOVER] 2 s stable -> PRE_ENTRY_GEOMETRY_LOCK (fresh timers)")
+                        print("[HOVER] settled with persistent fresh two-wall geometry "
+                              "-> PRE_ENTRY_GEOMETRY_LOCK")
 
             # =================================================
             # STATE 4+
@@ -1809,18 +2254,12 @@ def main() -> int:
 
 
                 if scan is None or scan.age_s > 0.30:
-
-                    send_stop(
-                        master
-                    )
-
-                    continue
+                    scan = None
 
 
                 # One native FSM iteration per LiDAR scan.
                 if (
-                    scan_seq
-                    != last_scan_sequence
+                    scan is None or scan_seq != last_scan_sequence
                 ):
 
                     last_scan_sequence = (
@@ -1837,6 +2276,7 @@ def main() -> int:
                     )
 
 
+                    corridor_step_started = time.monotonic()
                     output = (
                         corridor.step(
 
@@ -1847,9 +2287,11 @@ def main() -> int:
                             pose=pose,
                         )
                     )
+                    health_metrics.observe("corridor_step",
+                                           time.monotonic() - corridor_step_started)
 
 
-                    if not preentry_snapshot_saved:
+                    if scan is not None and not preentry_snapshot_saved:
                         try:
                             g = corridor.pre_entry.last_geometry
                             fields = ("confidence", "strict_valid", "loose_valid",
@@ -1857,19 +2299,13 @@ def main() -> int:
                                       "right_inliers", "left_span", "right_span",
                                       "left_rms", "right_rms", "sectors")
                             geometry = {key: getattr(g, key, None) for key in fields}
-                            args.debug_output.mkdir(parents=True, exist_ok=True)
-                            np.savez(args.debug_output / "preentry_scan.npz",
-                                     angles_rad=scan.angles_rad, ranges_m=scan.ranges_m,
-                                     range_min_m=scan.range_min_m, range_max_m=scan.range_max_m)
                             details = {"lidar_world_pose": scan_world_pose,
                                        "ekf_z": telemetry.z_m, "geometry": geometry}
                             details["local_position_ned"] = {
                                 "x": telemetry.x_m, "y": telemetry.y_m,
                                 "z": telemetry.z_m, "yaw_rad": telemetry.yaw_rad,
                             }
-                            (args.debug_output / "preentry_geometry.json").write_text(
-                                json.dumps(details, indent=2))
-                            print("[PRE_ENTRY SNAPSHOT] saved to", args.debug_output, details)
+                            snapshot_service.submit(args.debug_output, scan, details)
                             preentry_snapshot_saved = True
                         except Exception as exc:
                             print("[PRE_ENTRY SNAPSHOT] capture failed:", exc)
@@ -1902,7 +2338,9 @@ def main() -> int:
                     else:
 
                         command = output.command
-                        send_native_velocity(master, command)
+                        send_native_velocity(
+                            master, command,
+                            source_timestamp=scan.timestamp if scan is not None else None)
 
 
                     # -----------------------------------------
@@ -1983,7 +2421,7 @@ def main() -> int:
                             f"{output.confidence} "
 
                             f"| scan="
-                            f"{scan.age_s:.3f}s "
+                            f"{scan.age_s if scan is not None else float('inf'):.3f}s "
 
                             f"| pose="
                             f"{'OK' if pose else 'NO'} "
@@ -2045,6 +2483,14 @@ def main() -> int:
                         send_stop(
                             master
                         )
+                        if coverage_cfg.geofence_latlon is not None:
+                            try:
+                                coverage_cfg=coverage_cfg.register_origin(
+                                    telemetry.origin_lat_deg, telemetry.origin_lon_deg)
+                            except (ValueError,TypeError) as exc:
+                                print(f'[COVERAGE] ABORT: geofence registration: {exc}')
+                                state=ExperimentState.ABORT
+                                continue
                         # Field starts beyond the corridor roof. This catches
                         # gross spawn/registration errors, not subtle EKF drift.
                         registered = coverage_entry_registered(telemetry, coverage_cfg, now)
@@ -2052,9 +2498,22 @@ def main() -> int:
                             print("[COVERAGE] ABORT: corridor exit outside registered field")
                             state = ExperimentState.ABORT
                         else:
-                            field_advance_started = now
-                            field_advance_boot_start = telemetry.position_boot_s
-                            state = ExperimentState.ADVANCE_TO_FIELD
+                            field_advance_heading = telemetry.yaw_rad
+                            exit_ne = np.array([telemetry.x_m, telemetry.y_m])
+                            travel = coverage_cfg.clearance + .4
+                            field_advance_target = exit_ne + travel * np.array([
+                                math.cos(field_advance_heading),
+                                math.sin(field_advance_heading)])
+                            target_field = FieldFrame(coverage_cfg).point(field_advance_target)
+                            if not (coverage_cfg.n_min+coverage_cfg.clearance <= target_field[0] <= coverage_cfg.n_max-coverage_cfg.clearance
+                                    and coverage_cfg.e_min+coverage_cfg.clearance <= target_field[1] <= coverage_cfg.e_max-coverage_cfg.clearance):
+                                print('[COVERAGE] ABORT: corridor heading does not lead into field inset')
+                                registered = False
+                                state = ExperimentState.ABORT
+                            else:
+                                field_advance_started = now
+                                field_advance_boot_start = telemetry.position_boot_s
+                                state = ExperimentState.ADVANCE_TO_FIELD
 
 
                         print()
@@ -2078,9 +2537,7 @@ def main() -> int:
                         )
 
             elif state == ExperimentState.ADVANCE_TO_FIELD:
-                fresh = (telemetry.x_m is not None and telemetry.vx_m_s is not None
-                         and math.isfinite(telemetry.x_m) and math.isfinite(telemetry.vx_m_s)
-                         and 0 <= now - telemetry.position_time <= LIDAR_POSE_MAX_AGE_S)
+                fresh = field_advance_health(telemetry, coverage_cfg, now)
                 if (now - field_advance_started > 30.0
                         or telemetry.position_boot_s < field_advance_boot_start
                         or telemetry.position_boot_s - field_advance_boot_start > 12.0):
@@ -2089,14 +2546,15 @@ def main() -> int:
                     state = ExperimentState.ABORT
                 elif not fresh:
                     send_stop(master)
-                    if now - telemetry.position_time > 2.0:
-                        print("[COVERAGE] ABORT: field-entry localization stale")
-                        state = ExperimentState.ABORT
-                elif telemetry.x_m < coverage_cfg.n_min + coverage_cfg.clearance + .4:
-                    # Continue north beyond the roof and inside the coverage
-                    # planner's clearance inset before climbing vertically.
-                    send_camera_velocity(master, .15, 0.0, 0.0)
-                elif abs(telemetry.vx_m_s) > .10:
+                    print("[COVERAGE] ABORT: field-entry pose/heading/envelope invalid")
+                    state = ExperimentState.ABORT
+                elif np.dot(field_advance_target-np.array([telemetry.x_m,telemetry.y_m]),
+                            np.array([math.cos(field_advance_heading),math.sin(field_advance_heading)])) > 0:
+                    # Advance along the measured corridor exit bearing, not world north.
+                    forward, right = heading_velocity_in_body(.15, field_advance_heading,
+                                                              telemetry.yaw_rad)
+                    send_camera_velocity(master, forward, right, 0.0)
+                elif math.hypot(telemetry.vx_m_s, telemetry.vy_m_s) > .10:
                     send_stop(master)
                 else:
                     send_stop(master)
@@ -2123,6 +2581,13 @@ def main() -> int:
                               f"HOME/EKF offset={local_minus_home:.2f} m")
 
             elif state == ExperimentState.ASCEND_FOR_COVERAGE:
+                if (not field_advance_health(telemetry, coverage_cfg, now)
+                        or np.dot(field_advance_target-np.array([telemetry.x_m,telemetry.y_m]),
+                                  np.array([math.cos(field_advance_heading),math.sin(field_advance_heading)])) > .1):
+                    send_stop(master)
+                    print("[COVERAGE] ABORT: clear-to-climb envelope lost")
+                    state = ExperimentState.ABORT
+                    continue
                 result = coverage_climb.update(
                     now, telemetry.z_m, telemetry.vz_m_s,
                     telemetry.position_time, mission_time=telemetry.position_boot_s,
@@ -2139,23 +2604,35 @@ def main() -> int:
                     send_camera_velocity(master, 0.0, 0.0, result.vz_down)
 
             elif state == ExperimentState.COVERAGE:
-                # Reuse this MAVLink connection. The corridor loop does not
-                # publish commands while the coverage runtime is running.
+                # The leased sender remains the one navigation output owner.
+                # Claiming coverage authority revokes all corridor proposals.
+                send_stop(master)
+                coverage_token = active_commands.claim()
+                print("[TIMING PRE-COVERAGE]", health_metrics.snapshot_and_reset(),
+                      "preview_dropped=", preview.dropped)
                 coverage_started = True
+                coverage_invoked = True
                 try:
-                    coverage_exit = run_coverage([
+                    coverage_args = [
                         "--config", str(args.coverage_config),
                         "--log", str(args.coverage_log),
                         "--max-wall-seconds", str(args.coverage_max_wall_seconds),
                         "--entry-wall-seconds", "30",
                         "--fly",
-                    ], master=master)
+                    ]
+                    if args.no_gui:
+                        coverage_args.append('--no-gui')
+                    coverage_exit = run_coverage(coverage_args, master=master,
+                        command_service=active_commands, command_token=coverage_token,
+                        config_override=coverage_cfg,
+                        initial_origin=(round(telemetry.origin_lat_deg*1e7),
+                                        round(telemetry.origin_lon_deg*1e7),
+                                        telemetry.origin_alt_mm)
+                        if coverage_cfg.geofence_latlon is not None else None)
                 except (Exception, SystemExit) as exc:
-                    # Setup failed before the coverage runtime's guarded loop.
-                    # It has not sent motion commands, so the manager retains
-                    # stop authority for this exceptional startup path.
-                    coverage_started = False
-                    print(f"[COVERAGE] startup failed: {exc}")
+                    # Coverage may already have commanded motion. Do not reclaim
+                    # authority using the corridor's now-stale telemetry.
+                    print(f"[COVERAGE] runtime failed: {exc}")
                     state = ExperimentState.ABORT
                 else:
                     state = (ExperimentState.COMPLETE if coverage_exit == 0
@@ -2194,17 +2671,13 @@ def main() -> int:
             # GUI ESC
             # =================================================
 
-            if (
-                cv2.waitKey(1)
-                & 0xFF
-                == 27
-            ):
+            if preview.escape_pressed():
 
                 print(
                     "[EXPERIMENT] "
                     "ESC pressed"
                 )
-
+                state = ExperimentState.ABORT
                 break
 
 
@@ -2217,6 +2690,30 @@ def main() -> int:
                 -
                 loop_started
             )
+            if not coverage_invoked:
+                health_metrics.observe("mission_loop", elapsed)
+            if not coverage_invoked and time.monotonic() - last_metrics >= 5.0:
+                print("[TIMING]", health_metrics.snapshot_and_reset(),
+                      "preview_dropped=", preview.dropped,
+                      "preview_alive=", preview.alive,
+                      "preview_exitcode=", preview.exitcode,
+                      "console_dropped=", async_console.dropped_lines,
+                      "camera_duplicates=", camera_clock_gate.duplicates,
+                      "lidar_duplicates=", lidar_clock_gate.duplicates,
+                      "command_expirations=",
+                      active_commands.expirations if active_commands else 0,
+                      "command_send_peak_ms=",
+                      round(active_commands.send_duration_peak_s * 1000, 2)
+                      if active_commands else 0,
+                      "command_deadline_misses=",
+                      active_commands.deadline_misses if active_commands else 0,
+                      "decision_to_send_peak_ms=",
+                      round(active_commands.decision_to_send_peak_s * 1000, 2)
+                      if active_commands else 0,
+                      "observation_to_send_peak_ms=",
+                      round(active_commands.observation_to_send_peak_s * 1000, 2)
+                      if active_commands else 0)
+                last_metrics = time.monotonic()
 
             time.sleep(
 
@@ -2237,30 +2734,57 @@ def main() -> int:
         )
         state = ExperimentState.ABORT
 
+    except Exception as exc:
+        print(f"[EXPERIMENT] exception: {exc}")
+        state = ExperimentState.ABORT
+
 
     finally:
 
         print()
 
-        if not coverage_started:
-            print("[EXPERIMENT] sending STOP")
-            for _ in range(10):
+        if coverage_started:
+            try:
+                if active_commands is not None:
+                    active_commands.publish(0.,0.,0.,coverage_cfg.heading+coverage_cfg.field_yaw,
+                                            token=coverage_token, frame='local')
+                stop_command_service()
+            except Exception as exc:
+                print(f"[SAFETY] coverage output shutdown failed: {exc}")
+        else:
+            try:
+                stop_command_service()
+            except Exception as exc:
+                print(f"[SAFETY] output worker shutdown failed: {exc}")
+            if telemetry.mode == "GUIDED" and not telemetry.authority_revoked:
                 try:
                     send_stop(master)
-                except Exception:
-                    pass
-                time.sleep(0.05)
-        else:
-            print("[EXPERIMENT] coverage owns the final hold; no second command")
+                except Exception as exc:
+                    print(f"[SAFETY] STOP dispatch failed: {exc}")
+            if (state == ExperimentState.ABORT and mission_arm_requested
+                    and telemetry.armed and telemetry.mode in ("GUIDED", "LAND")
+                    and not (telemetry.authority_revoked and telemetry.mode != "LAND")):
+                try:
+                    confirmed = confirm_terminal_land(master)
+                    print(f"[SAFETY] LAND confirmation: {confirmed}")
+                except Exception as exc:
+                    print(f"[SAFETY] LAND dispatch/confirmation failed: {exc}")
+        if coverage_started:
+            print("[EXPERIMENT] coverage authority released; command sender stopped")
 
         master.close()
 
-        cv2.destroyAllWindows()
+        preview.stop()
+        snapshot_service.join()
+        if snapshot_service.error is not None:
+            print(f"[PRE_ENTRY SNAPSHOT] write failed: {snapshot_service.error}")
 
         print(
             "[EXPERIMENT] "
             "manager stopped"
         )
+        sys.stdout = async_console.stream
+        async_console.stop()
 
     return 0 if state == ExperimentState.COMPLETE else 1
 

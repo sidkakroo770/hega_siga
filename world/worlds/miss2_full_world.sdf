@@ -115,5 +115,47 @@
       </link>
     </model>
 
+    <!-- The GLB's central red-ground mesh has a dark/unrendered interior in
+         Ogre2 at the coverage-camera viewpoint. A paint-only surface at the
+         same surveyed bounds keeps the simulated red zone visible; it adds no
+         collision, and the controller receives no zone coordinates. -->
+    <model name="coverage_red_zone_central_paint">
+      <static>true</static>
+      <pose>-1.395 2.75 0.10 0 0 0</pose>
+      <link name="paint">
+        <visual name="red">
+          <geometry><box><size>7.43 10.0 0.02</size></box></geometry>
+          <material><ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Ogre2 renders two long strips of the GLB's otherwise grassy Final grd
+         nearly black in the downward camera (verified at N=15, E=8.5). They
+         leave >6,000 physically ordinary field cells unobservable even after
+         a full sweep. These paint-only grass backings are above the ground
+         mesh but below the existing red paint and QR meshes. No collision or
+         map coordinates are given to the flight controller. -->
+    <model name="coverage_grass_backing_east">
+      <static>true</static>
+      <pose>8.55 14.35 0.08 0 0 0</pose>
+      <link name="paint">
+        <visual name="grass">
+          <geometry><box><size>4.1 11.3 0.01</size></box></geometry>
+          <material><ambient>0.18 0.42 0.12 1</ambient><diffuse>0.18 0.42 0.12 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+    <model name="coverage_grass_backing_west">
+      <static>true</static>
+      <pose>-8.55 14.5 0.08 0 0 0</pose>
+      <link name="paint">
+        <visual name="grass">
+          <geometry><box><size>4.1 11.0 0.01</size></box></geometry>
+          <material><ambient>0.18 0.42 0.12 1</ambient><diffuse>0.18 0.42 0.12 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
 </world>
 </sdf>

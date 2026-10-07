@@ -1,5 +1,350 @@
 # SAE Mission 2 — corridor integration and isolated corridor test handoff
 
+## Latest implementation and Gazebo checkpoint — 2026-10-05
+
+The four previously unfinished integration items are now implemented in the
+full-world non-ROS manager:
+
+1. **Autonomous takeoff:** `--start-mission` is required. The manager waits
+   for fresh camera, LiDAR, pose, attitude, HOME-relative altitude, EKF,
+   heartbeat, landed and FC pre-arm feedback. It requests GUIDED, normal arm,
+   and one takeoff to the configurable provisional 3 m Gazebo altitude. It
+   waits for fresh measured altitude and a continuous low-speed settle
+   period before BANNER_SEARCH. An already-armed restart and rejected
+   commands abort. No manual arming/takeoff is part of the current launch.
+2. **Output watchdog:** pre-coverage velocity output has one dedicated
+   command worker and a 0.30 s command lease. A stalled GUI, detector or
+   mission loop lets the lease expire to STOP; worker failure aborts on the
+   next mission-loop check. The worker is stopped before coverage assumes
+   sole MAVLink command ownership. A process or link failure still relies on
+   FC failsafes. Abort LAND stays on the connection for bounded ACK/mode
+   confirmation and does not override observed pilot mode takeover.
+3. **Positive corridor handoff:** the 0.50 m forward range is a hard
+   approach stop only. A recent banner sighting and the fixed Gazebo
+   staging envelope (local N [-31.5,-29], E [-6,-2], HOME altitude [1.5,5]
+   m) are required before the 1 m descent. At the settled staging height,
+   at least three distinct fresh scans must show strict supported two-wall
+   geometry, adequate confidence and safe front range before native
+   PRE_ENTRY receives control. Camera loss cannot declare arrival.
+4. **Gazebo regressions:** an isolated Gazebo partition, copied test model
+   on a separate SITL instance/ports, and the existing coverage runtime
+   were exercised. The final nominal pre-coverage run reached:
+   autonomous takeoff → camera search/centre → 0.49 m approach stop →
+   staging descent/readiness → PRE_ENTRY → ENTER (0.76/0.75 m) →
+   CRUISE → EXIT (1.21/1.20 m) → field advance → 10 m climb →
+   coverage SWEEP. Coverage accepted entry and processed sweep points.
+   That regression deliberately limited coverage to 120 s; its subsequent
+   `ABORTED: Wall-time execution limit` is not a full-coverage failure
+   diagnosis or a claim of complete traversal.
+
+The first live run revealed that at the real Gazebo corridor exit the
+straight-ahead and both 45° sectors were supported clear to 12 m, while
+the 90° side beams still saw the rear walls at about 1.9 m. The existing
+side-only candidate repeatedly recovered and aborted. Exit recognition now
+also accepts persistent supported forward-diagonal openings when a
+plausible loose wall pair remains and the strict fit weakens. Unknown or
+incomplete sectors still cannot establish an exit. The final run traversed
+that exit and entered coverage.
+
+A separate live fault run set a 0.5 s camera-phase deadline. After
+autonomous takeoff and entry into camera centering, it stopped on the
+deadline, sent LAND and received FC confirmation; the isolated SITL
+subsequently disarmed. A separate early run with `Arm: Accels
+inconsistent` rejected arming and aborted on the ground. FC pre-arm
+health is now a startup prerequisite.
+
+**Verification:** 74 targeted offline tests pass (native validity, hardware
+health, startup, positive wall evidence, command lease, exit and altitude,
+coverage boundary). Live nominal and fault logs are under
+`/tmp/sae-autostart-gz.Xmsd78/` while that temporary directory exists.
+The user's pre-existing ArduCopter process was left untouched; test
+Gazebo, SITL and MAVProxy processes were stopped.
+
+**Still pending outside these four items:** measured camera calibration and
+HSV tuning, final vehicle dimensions/clearance and site staging envelope,
+real LiDAR no-return semantics and mount checks, source-clock alignment,
+Pi 5 timing/thermal benchmarks, a full-duration coverage regression with
+the current integration, and physical FC/failsafe tests. These require
+measured hardware/site evidence or longer coverage validation; the
+provisional Gazebo limits are not real-flight certification.
+
+## Current decision record — 2026-10-05: pre-hardware corridor fixes
+
+**Historical checkpoint, superseded by the latest status above.**
+The user authorised implementation and withdrew the f/10 aperture statement.
+This section records the user's decisions and current progress.
+It supersedes conflicting earlier instructions
+about manual airborne start, a known exact banner shade, range/loss-based
+arrival, and what should wait for hardware. Historical implementation and
+validation notes below remain historical, not current acceptance claims.
+
+Review baseline: [corridor_analysis.md](/home/sid/Desktop/corridor_analysis.md),
+dated 2026-10-03, findings R01–R23. Preserve that original audit as a historical
+record; use this section for subsequent scope and engineering decisions.
+Active full-mission path:
+`world/integration/experimental_corridor_manager.py` importing
+`corridor/native`. Preserve the existing coverage boundary and do not
+unnecessarily redesign the validated coverage/red-zone algorithm.
+
+### Implementation checkpoint — 2026-10-05
+
+This is NOT a completed pre-hardware safety implementation, a new full-Gazebo
+validation, or approval for real flight. Historical successful flights below
+predate these changes. No aircraft/device connection or flight was used for
+the tests at this checkpoint.
+
+Implemented and covered by targeted offline tests:
+
+| Area | Current implementation | Remaining boundary |
+| --- | --- | --- |
+| Shared validity | Reject nonfinite/future/stale pose and attitude; missing attitude stops native corridor control. Front sectors require angular support and valid returns; unknown is not free space. Gazebo explicitly opts into its positive-infinity no-return convention. | Clock mapping, estimator continuity, mounting verification and measured sensor budgets remain. |
+| Native state safety | Missing scans still tick bounded recovery; terminal timeout outputs include LAND intent. VERIFY_LOCK dead bands and timeout corrected. ENTER checks current wall geometry/front/attitude before moving. PASS and EXIT stop on unavailable front sectors; EXIT stops on the first close return. Lost fits alone no longer prove an exit. | Full footprint/pass criteria, continuous entry/exit cross-track and height supervision, and terminal dispatch confirmation remain. |
+| Hardware command path | Added the missing pure MAVLink command mapping; finite FLU-to-body-NED conversion tested. Controlled hardware runner requires explicit positive entry distance. Telemetry is filtered to the selected FC system/component, EKF reports expire, velocity requires armed/GUIDED/fresh attitude, and an observed mode/disarm takeover is latched. | These hardware sender checks are not yet the full Gazebo manager's shared command supervisor. Startup, independent output-worker supervision, ACK/retry policy and unified authority remain pending. |
+| Camera phase | One overall search/centre/approach deadline and displacement bound, not reset by reacquisition. Decoded-frame receipt freshness gates motion; sustained sensor failure aborts. Camera loss no longer transitions to descent. Unsupported front range stops approach. No search collision avoidance added. | Receipt age is not exposure age. GUI independence, source-clock alignment, image format/stride validation, calibrated servo and positive staging/readiness still require work. |
+| Serial LiDAR | Assembly time and size bounded; incomplete angular coverage rejected; excessive serial backlog discarded. Scan age begins at assembly start rather than completion. Raw packet sensor timestamp retained in ScanFrame; rejection/backlog counters exposed. | Sensor clock mapping and timestamp propagation through the native adapter are not complete. Continuous acquisition/queue-age measurements and real no-return semantics still need work. |
+| Field advance | Convert northward velocity into body forward/right using current heading; check both horizontal axes, heading freshness and registered field envelope. Require total horizontal settling; recheck the configured clear-to-climb boundary during ascent. | Full roof/body clearance certification and autonomous full-world regression remain pending. |
+
+Provisional camera guard defaults: total phase 120 s, displacement radius
+10 m from first valid 3D pose, frame receipt age 0.5 s, sensor failure grace
+2 s. CLI exposes phase timeout, travel limit and frame age. These are bounded
+development values, not measured physical flight limits. LiDAR assembly
+defaults are 0.30 s, 4096 points, 4-degree maximum angular gap and 4096-byte
+backlog; hardware EKF freshness is 1.5 s. Their suitability needs measurement.
+
+Verification at this checkpoint: **67 offline tests passed**, comprising
+native safety contracts, fake MAVLink health/authority, synthetic serial
+assembly, banner bounds/freeze, exit-clock, altitude and coverage-boundary
+regressions. Tests make no real command transmissions.
+
+```bash
+cd /home/sid/sae_mission2
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=/home/sid/sae_mission2/corridor:/home/sid/sae_mission2/world/integration \
+python3 -m pytest -q -p no:cacheprovider \
+  corridor/native/test_lidar_assembly.py \
+  corridor/native/test_hardware_health.py \
+  corridor/native/test_safety_contracts.py \
+  corridor/native/test_exit_clock.py \
+  world/integration/test_corridor_altitude.py \
+  world/integration/test_coverage_handoff.py
+```
+
+**Remaining at that earlier checkpoint:** autonomous preflight/
+arm/takeoff; independent expiring command output and worker supervision;
+shared full-mission authority and bounded terminal dispatch; safe entrance
+staging and positive persistent wall readiness (the current range-triggered
+descent is NOT yet replaced); altitude/pose continuity gates; source timing;
+decoupled GUI/logging and health instrumentation; configurable vision and
+explicit vehicle-envelope profile; full Gazebo nominal/fault regression.
+Do not mark the full checklist items complete from component tests alone.
+
+### Agreed direction
+
+Fix genuine software, state, safety, validity, freshness, command-authority,
+and integration problems in the next implementation pass. Do not wait for
+final optics, HSV/gain tuning, aircraft dimensions, clearance margins,
+RANSAC thresholds, obstacle confirmation, or Pi benchmarks to write and
+test those fixes.
+
+The immediate integration/flight-test target remains Gazebo; the deliverable
+must remain suitable for later Pi hardware development. Use a shared
+non-ROS mission/control core with explicit simulation/hardware adapters,
+rather than maintaining divergent safety semantics in two runners.
+Retain the lightweight wall geometry, simple colour detector, specialised
+obstacle model, measured entry/exit progress, and useful altitude helper.
+No AI model, dense reconstruction, ROS 2 migration, or speculative QR logic.
+
+Provisional settings must be visibly identified in configuration and logs.
+A provisional configuration is permission to develop and test its behaviour,
+not evidence that it is safe for physical flight.
+
+### Updated hardware and operating assumptions
+
+- Front camera: user-selected Arducam Sony IMX296 colour global-shutter M12
+  module, 1440×1080 / approximately 1.58 MP, 1/2.9-inch format (approximately
+  6.3 mm diagonal), 3.45 µm pixels, Raspberry Pi compatible.
+  [User product link](https://robu.in/product/arducam-1-58mp-imx296-color-global-shutter-camera-module-with-m12-lens-for-raspberry-pi/).
+- **Front focal length and actual processing-mode FOV remain unconfirmed.**
+  Do not infer them from the downward camera, assume native-resolution
+  mission processing, or apply catalog optics as calibrated values.
+- The user withdrew the f/10 statement. No aperture is assumed. Front lens
+  focal length/FOV and imaging settings remain unconfirmed; do not substitute
+  catalog optics or the downward lens as installed calibration.
+- Keep two cameras. The downward lens/geometry is separate from the front.
+  No need to force both exposures to coincide for the current independent
+  behaviours. Both acquisition pipelines must be included in later load tests.
+- Actual competition green shade is **unknown**. Existing HSV values are a
+  provisional baseline, not final calibration. Keep the simple detector.
+- Banner search area is expected clear of obstacles and other drones.
+  **Do not add LiDAR collision avoidance to this search stage.** LiDAR may
+  continue acquiring. Search still needs distance/time bounds, localization
+  supervision, and camera-failure handling.
+- LiDAR is physically centred. Treat horizontal origin as centred per the
+  user; mounting height, axes/signs, tilt and self-occlusion remain explicit
+  installation checks. Do not confuse centred XY with a zero vertical offset.
+- Static rectangular obstacles protruding from either corridor side are the
+  provisional competition model. Keep the specialised recogniser/bypass.
+  Unknown or unsupported geometry must stop/reassess and ultimately fail
+  conservatively, never be interpreted as an available passage.
+- Accept the 2D scan-plane limitation as an operating-envelope restriction.
+  Do not propose a sensor replacement as a prerequisite for progress.
+- Final aircraft dimensions were expected from the user after this discussion
+  and are not recorded here yet. Do not invent them.
+- Real mission **must include autonomous takeoff**. Manual Gazebo takeoff was
+  a previous test boundary, not the final mission design.
+- Initial QR behaviour remains deferred. No placeholder scanner, guessed
+  encoding, or speculative QR-dependent transitions.
+- GUI and black-box diagnostics are required for testing, but must not
+  determine control-output or watchdog responsiveness.
+
+### 1. Implement now — authorised scope and completion checklist
+
+Work is underway as recorded above. Items remain unchecked until their full
+scope is implemented and verified, not merely a component of the item.
+
+| Pending | Work item | Required behaviour / scope | Audit mapping |
+| --- | --- | --- | --- |
+| [ ] | One executable mission path and adapters | Repair missing hardware imports/command mapping and entry-distance configuration. Separate Gazebo dependencies from the shared mission core. Provide explicit dry-run, Gazebo and hardware entry paths with consistent safety contracts; camera input includes format/stride, acquisition timing and health. Hardware availability must not be required to run unit tests. | R01 |
+| [ ] | Autonomous startup, arm and takeoff | Explicit mission-start authorization; bounded preflight readiness; normal arming only; request and confirm the intended FC mode; command takeoff and verify fresh altitude, low velocity and continuous settling before search. Handle rejection, timeout, cancellation and already-airborne startup explicitly. No blind re-arm/re-takeoff after restart, no force arm/disarm, no QR dependency. | R01/R02/R10 plus new requirement |
+| [ ] | Continuous command authority | Filter telemetry to the intended FC; timestamp health reports; supervise heartbeat, mode, estimator validity, attitude and pose. One command owner across states and coverage handoff. Pilot takeover cancels mission authority; do not automatically retake GUIDED or resume old motion when the mode returns. Distinguish arming/takeoff authorization from permission for ordinary lateral motion. | R02 |
+| [ ] | Independent safety/output service | Bound command lifetime; supervise the output worker itself and dispatch failures. Stop/recover when required observations expire. Do not depend on image callbacks, scan callbacks, GUI, disk or printing to run safety timers. Retain FC failsafes for whole-process/link loss; software cannot guarantee a remote command during a broken link. | R03/R04/R05/R23 |
+| [ ] | Camera failure and bounded search | Preserve clear-area left search without LiDAR avoidance. Use a configured travel envelope and overall deadline that are not reset by repeated loss/reacquisition. No new/fresh frame means no continued image-derived motion. Fresh-image no-detection is distinct from camera failure and from arrival. Bound camera-centering attempts too. | R03/R06 |
+| [ ] | Positive camera-to-LiDAR readiness | Continuously evaluate usable wall geometry near the entrance without starting motion-producing native controllers prematurely. Require persistent, fresh two-wall evidence, plausible width/parallelism/fit support, safe front information, attitude/pose validity and settled staging conditions. Separate geometry available for alignment from final aligned/centred entry lock. See the staging sequence below. | R07/R08/R10 |
+| [ ] | Hard approach limit, not success threshold | Retain approximately 0.50 m as an explicit provisional forward-approach limit. It stops forward approach; it neither proves arrival nor grants entry/descent by itself. Missing/invalid front data in approach must not permit blind forward motion. Camera loss must not itself trigger descent or successful arrival. If readiness cannot be established without violating the limit, stop and use bounded recovery/abort, not a smaller magic threshold. | R07/R14 |
+| [ ] | Configurable simple vision and bounded servo | Expose HSV/area/shape settings, processing resolution, gains, limits, tolerances and confirmation duration. Preserve the simple detector. Make pixel thresholds mode-dependent or normalized consistently; handle clipping/target changes without treating an unobservable centre as proven alignment. Gate on freshness/attitude/height limits; do not tune final gains or shades now. | R08/R09 |
+| [ ] | Safe altitude/staging supervision | Keep finite-input, bounded-speed and fresh-sample settling logic. Establish configured floor/roof and staging envelopes with explicit HOME/local-Z conversion. Reacquire the same target, not another relative descent. Supervise height during corridor motion; valid zero-VZ commands alone do not prove clearance. Gazebo envelopes come from its known geometry; real limits remain provisional until measured. | R10 |
+| [ ] | Continuously supervised corridor entry | Retain measured heading-projected entry progress. Check live front/side validity, geometry, attitude, height, heading/cross-track and localization while moving; stale or unsafe data must stop the commit. Do not blindly finish a distance after losing safety evidence. | R11/R17/R21 |
+| [ ] | Verification-state liveness | Fix VERIFY_LOCK dead bands and apply bounded verification/alignment/recovery deadlines regardless of sensor delivery. Retain useful hysteresis, but every outcome must converge, recover or terminate. Recovery budgets must represent actual progress, not merely surviving a state for a few seconds. | R04/R12 |
+| [ ] | Explicit LiDAR validity semantics | Separate valid obstacle return, sensor-defined trustworthy no-return and unknown/invalid/missing sector. Check required angular support/completeness. NaN/zero/missing sectors cannot imply free space, and invalid front data cannot permit PASS/EXIT motion. Encode driver-specific semantics at the adapter, not by globally equating infinity to safety. | R13/R14/R19 |
+| [ ] | Exit evidence and safe commit | Require persistent, health-qualified opening evidence consistent with corridor progress. Lost wall fits alone are not an exit. Revalidate during exit commit; keep the measured-distance criterion and guards. Without trustworthy opening/pose evidence, stop/recover rather than declaring completion. | R13/R14/R21 |
+| [ ] | Conservative existing obstacle model | Keep wall-attached rectangular-face decisions and SHIFT/PASS. Ensure unsupported/ambiguous geometry, loss of the open-side wall, invalid front data, uncertain pass completion and timeouts cannot command an unchecked bypass. Test both obstacle sides, blocked passages and unsupported shapes. No arbitrary-obstacle planner now. | R14/R15 |
+| [ ] | Explicit aircraft/clearance configuration | Centralize footprint, body extent, side/rear margins and uncertainty assumptions; validate consistency and report profile status. Keep existing values only as identified simulation placeholders, not new claims about the real aircraft. No invented dimensions or certified stopping margins. | R16 |
+| [ ] | Mandatory usable attitude and mount contract | Reject stale, missing or nonfinite attitude for safety-relevant corridor geometry/control. Explicit FLU/NED, scan handedness, yaw offset and centred mount assumptions; test sign conversions. Keep planar geometry and conservative tilt gating. Deskew is not automatically required now. | R17 |
+| [ ] | Sensor acquisition and queue-age integrity | Preserve source timestamps, receipt timestamps, source sequence and clock identity; align/map clock domains with bounded uncertainty. Drop old work rather than refreshing its age when decoded. Keep acquisition prompt and queues bounded. Add skew/continuity gates for scan/attitude/pose; exact thresholds stay provisional. | R18/R20 |
+| [ ] | Serial scan assembly robustness | Repair wrap/dropout handling; cap scan assembly time/size; reject incomplete or implausible revolutions; expose CRC, packet loss, missing sectors, scan duration and backlog. Preserve existing correct CRC/unit conversion. Unknown physical no-return semantics remain unknown rather than silently becoming clear. | R18/R19 |
+| [ ] | Pose integrity | Reject nonfinite coordinates/velocity/yaw; detect source-clock resets, estimator discontinuities and implausible jumps; stop rather than crediting jumps as entry/exit distance. Bound cross-track and heading deviation. Keep the correct NED projection mathematics. | R21 |
+| [ ] | Frame-consistent field advance / clear-to-climb | Make commanded motion and progress checks use the same registered frame, supervise both horizontal axes and total horizontal settling, verify configured roof-clear/field containment before and during climb. Preserve fixed replaceable geofence coordinates and the HOME/local-Z conversion; no speculative geofence input system. | R22 |
+| [ ] | Reliable bounded abort / shutdown | Every abort path yields an explicit action and stops navigation immediately. Confirm/retry terminal requests within bounded budgets; use health-qualified bounded hold/recovery where appropriate, then the configured terminal action. Keep the FC connection alive until dispatch/confirmation or explicit failure escalation, not close-before-LAND. No in-flight disarm, no indefinite hover, and no LAND/mode override fighting deliberate pilot takeover. | R05 |
+| [ ] | Decoupled GUI / black-box diagnostics | Bounded asynchronous telemetry/log/preview delivery; control never waits for a renderer, terminal or disk. Surface dropped logs/full queues/disk failures and worker health. Preserve useful event evidence, not unbounded image histories. Avoid duplicate-frame processing and unnecessary post-handoff conversions while keeping sensor acquisition available. | R23 |
+| [ ] | Timing/health instrumentation | Record acquisition/receipt/processing/dispatch ages, time-domain mapping uncertainty, sensor rates/dropouts, queue depth/drops, fit time, loop overruns, command expiry, output-worker heartbeat, send/ACK/mode outcomes, state transitions and reasons. Include effective configuration and provisional markers. Measure CPU/RAM/temperature/throttling when supported; absence of a metric must not break control. | R18/R20/R23 |
+| [ ] | Regression and fault-injection tests | Add tests for the audit's reproduced failures, takeoff rejection/stale feedback, camera freeze/loss, partial/missing LiDAR, stale IMU/EKF, invalid/jumping pose, pilot takeover, worker failure, frozen clocks, GUI/disk stalls, handoff limits and both obstacle directions. Re-run nominal full Gazebo mission from autonomous takeoff through corridor exit and existing coverage handoff. | R01–R23 |
+
+#### Handoff staging decision: avoid a geometry/altitude circular dependency
+
+The existing full-world code approaches the raised banner, descends 1 m,
+settles, and only then creates PRE_ENTRY. The current world banner centre
+is at world Z=3.548 m and the simulated LiDAR is 0.25 m below the aircraft
+reference. Therefore, do not assume wall readiness can always be acquired
+at the banner-centering height. Inspect actual geometry/visibility during
+implementation; source coordinates alone do not establish flight clearance.
+
+The intended logic is:
+
+1. Camera-guided, bounded approach with valid front information, while a
+   read-only wall estimator checks readiness at the current scan plane.
+2. Stop forward travel on usable readiness or at the provisional hard limit.
+   Neither reaching the limit nor losing the image is successful arrival.
+3. If a height adjustment is needed to observe the corridor walls, treat it
+   as a separate, bounded **staging manoeuvre**, not an arrival declaration.
+   It requires a verified/configured entrance staging region, fresh pose and
+   altitude, attitude limits, settling, and a known safe vertical envelope.
+   In Gazebo these can come from the fixed scene; do not infer a free
+   vertical path from a horizontal LiDAR scan.
+4. Grant LiDAR corridor authority only with persistent valid wall geometry
+   and the required sensor/vehicle health. Then PRE_ENTRY aligns/verifies
+   before ENTER; wall visibility is not identical to an entry lock.
+5. If the safe staging prerequisites/readiness are unavailable, stop and
+   exhaust only bounded safe recovery. Do not creep past 0.50 m, descend
+   because the banner disappeared, or weaken fit validation to force progress.
+
+This preserves the user's reason for approaching close enough to see walls,
+without turning a distance number into evidence of safe arrival.
+
+#### Provisional defaults and safety policy
+
+- Use a named Gazebo profile retaining the current scene, processing mode,
+  gains and geometry thresholds as a regression baseline. Configuration
+  changes must not silently change the meaning of pixel/frame thresholds.
+- Takeoff height and pre-search pose are explicit profile settings. The
+  historical full-world setup used roughly 3 m; the mission PDF includes
+  an initial 5 m stage. Do not silently assume these are interchangeable,
+  add timed QR-associated movements, or move the aircraft to 5 m without
+  checking the banner/staging sequence. Automate the known Gazebo entry
+  first; record the competition startup profile separately.
+- Existing 0.30 s scan-age and 0.35 s command-cache budgets are candidate
+  provisional starting points, not measured hardware guarantees. Give
+  camera/attitude/pose/health checks explicit finite deadlines and log their
+  effective values. Do not copy extended slow-simulation timeouts blindly
+  into a hardware profile or relax them simply to hide missed deadlines.
+- Approximately 0.50 m is a provisional approach stop boundary, not a
+  physically certified stopping distance. Account for speed/latency and
+  stopping allowance once measured; fault tests must not waive the boundary.
+- Keep real aircraft dimensions/clearance assumptions visibly unresolved.
+  Development, simulation, adapter work and motors-disabled logging may
+  proceed. Real corridor-flight approval still requires the physical envelope.
+- Configure/test terminal policy now, with the existing LAND intent made
+  reliable in Gazebo and bounded recovery while localization is usable.
+  Physical ground safety and FC failsafes must be verified before real
+  flight; a blind zero-velocity hold is not a fallback for invalid localization.
+  Whole-process/link failure must be handled by the FC, not a claimed
+  guaranteed Python emergency transmission.
+- Provisional settings must stop/recover conservatively on insufficient
+  evidence. Do not invent confidence, free space, dimensions or calibration
+  values merely to keep the mission progressing.
+
+### 2. Left for later — explicit reminders
+
+These items do **not** block the software/state/safety work above.
+
+| Pending | Deferred item | What must eventually be recorded / validated |
+| --- | --- | --- |
+| [ ] | Actual aircraft dimensions | Full propeller/airframe width, length and height; confirm centred LiDAR reference and mounting height. Update all passage/rear/floor/roof envelopes consistently when supplied. |
+| [ ] | Final clearances and motion limits | Measured stopping/tracking/height errors, latency allowance, wind response and uncertainty margins. Do not certify simulation values for real flight. |
+| [ ] | Installed front lens | Measure actual focal length/FOV for the selected crop/processing mode, focus, distortion and mount alignment; record aperture when known. The f/10 claim was withdrawn. Do not use downward-camera optics. |
+| [ ] | Final vision settings | Competition green sample/shade; real sun/shade/glare; HSV/area/shape settings, exposure/gain/white balance, vibration/blur behaviour, servo gains and settling tolerances. Keep settings adjustable now. |
+| [ ] | Final camera workload | Choose processing resolution/FPS for both streams based on actual pipeline and visibility needs; native sensor resolution is not mandatory. Check channel order/stride and exposure metadata on the real adapter. |
+| [ ] | Pi sustained stress benchmark | Both cameras acquiring, LiDAR, FC link, mission/perception, GUI and black-box logging together; latency distributions/tails and overruns, not just mean FPS. Repeat in final power/cooling/enclosure conditions. |
+| [ ] | Profile-led compute changes | Only after evidence: RANSAC candidate budgets/early exit, sampling, shared fit primitives, CRC optimisation, additional worker/process changes. No premature C++/GPU/AI rewrite. |
+| [ ] | Physical LiDAR characterisation | Confirm exact device/protocol, rate, invalid/no-return and intensity semantics, angular coverage, surface/lighting response, self-returns, handedness/mount checks and clock behaviour. Parser/failure handling work proceeds now. |
+| [ ] | Final RANSAC and sensor timing tolerances | Calibrate fit support/residual/confidence thresholds and sample-age/skew/confirmation budgets from recordings. Do not use looser thresholds to conceal a software failure. |
+| [ ] | Confirmed obstacle envelope | Verify actual competition obstacle shape/material/height. Keep side-protruding rectangular model until contrary evidence; extend only if necessary. |
+| [ ] | Physical scan-plane validation | Verify that supported walls/obstacles intersect the scan plane under allowed attitude/height. Accept off-plane blindness; assess deskew only if recordings show a need. |
+| [ ] | FC/localization and real-flight acceptance | Confirm firmware, localization sources/accuracy, EKF continuity, link rates, mode/arming/takeoff/landing confirmation, battery/link failsafes, RC takeover and restart behaviour. Validate tests implemented now on the actual FC. |
+| [ ] | Site registration / takeoff and staging heights | Confirm HOME/EKF-to-ground datum on the flat site, corridor heading, safe launch/search/staging/climb regions, roof/floor heights and final competition takeoff profile. Fixed geofence configuration remains acceptable. |
+| [ ] | Initial QR functionality | Wait for organiser encoding/behaviour clarification. No speculative implementation. |
+| [ ] | Extra architecture or sensing | Exact dual-camera shutter synchronisation, arbitrary-obstacle navigation, terrain modelling, dynamic geofence ingestion, SLAM, AI and dense reconstruction are not current requirements. Revisit only with a demonstrated need. |
+
+### Completion criteria for the next software pass
+
+- The shared mission is executable and dry-run safe; no missing imports,
+  hidden unset entry distance, or accidental real-control enablement.
+- Autonomous takeoff is demonstrated in Gazebo with readiness/settling and
+  failure cases, not assumed from a pre-positioned aircraft.
+- The reproduced audit failures have targeted passing regressions: no
+  missing terminal action, indefinite VERIFY_LOCK, unchecked ENTER,
+  false exit from unknown side sectors, PASS with invalid front data,
+  or movement from nonfinite pose.
+- Camera loss cannot become arrival or unbounded search. The hard approach
+  limit cannot be crossed to force wall readiness. Staging and true entry
+  readiness are logged separately.
+- Missing scans and stalled perception still advance watchdog/recovery
+  deadlines. GUI/log stalls do not extend command lifetime; output-worker
+  failure is detected. Whole-application failure remains an FC failsafe test.
+- Unsupported obstacle geometry results in bounded conservative failure.
+  Valid supported left/right obstacles still pass the nominal Gazebo cases.
+- Every motion state applies the appropriate health/validity contract;
+  pilot takeover cancels authority and cannot trigger surprise resumption.
+- Full Gazebo regression reaches corridor exit and the existing coverage
+  handoff with frame-consistent motion and configured clear-to-climb guards.
+- Logs record configuration, provisional values, timing and failure evidence.
+  Passing tests proves the software against those declared assumptions,
+  not measured Pi performance or real-aircraft clearance.
+- Update this checklist with what actually changed and was tested. Do not
+  mark the later hardware/benchmark items complete from simulation alone.
+
+---
+
+
 ## Latest update — 2026-09-22 exit timing
 
 This update supersedes earlier test boundaries below. User's full-world run
@@ -992,3 +1337,81 @@ session changes. The handoff is also saved at `/home/sid/Desktop/HANDOFF.md`
 and `/home/sid/sae_mission2/HANDOFF.md`; update those copies from the canonical
 file when refreshing context. At the end of the handoff-writing turn, stop:
 the user explicitly prohibited further implementation in that turn.
+
+## Current post-corridor coding status — 2026-10-06
+
+The legacy Next Session note above is historical. Current implementation and
+remaining validation are in `world/integration/FULL_MISSION_COVERAGE.md`, with
+finding-by-finding status in `/home/sid/Desktop/post_corridor_analysis.md`.
+
+The corridor-to-coverage transition now keeps one leased MAVLink sender alive
+with a new coverage-stage authority token. Coverage terminal hold requires
+valid FC/estimator/clock/origin data; cleanup survives send errors. Its optional
+GUI is out of the planner process, and `--no-gui` propagates. An ordered
+rectangular GPS geofence can register an arbitrarily rotated field frame from
+FC `GPS_GLOBAL_ORIGIN`; old Gazebo bounds remain the default. Field advance
+follows the measured corridor-exit bearing, not fixed north.
+
+The downward pipeline uses configurable broad-red HSV, five distinct-frame
+confirmation, per-pixel usable-ground evidence and one image-to-grid homography.
+Confirmed-red exclusion uses clearance-aware connectivity. Route search uses
+conservative coarse-grid acceleration with original-grid checks/fallback.
+IMX296 global shutter and provisional 10 mm downward lens remain the hardware
+assumptions; calibration, real camera timing and Pi benchmarks are pending.
+
+76 selected offline/integration/synthetic tests passed; one test in the old
+isolated project still expects two-frame confirmation. A new Gazebo campaign
+could not start because this sandbox denied socket creation. **This edited
+revision is not yet Gazebo validated.** Run the full-world truth-monitored
+regression in a normal terminal. QR, delivery and return remain deferred.
+
+## Latest integrated coverage status — 2026-10-07
+
+The sandbox note above is historical. Multiple original-world flights were
+run from autonomous takeoff with independent Gazebo truth; none reached
+controller `COMPLETE`, although recent traces had zero red/fence incursions.
+Read `world/integration/FULL_MISSION_COVERAGE.md` for exact failure evidence.
+The latest `full_neutral_20261007` stopped with 15 path points on a printed
+ground patch. A bounded, red/edge-vetoed tiny-unknown inference now makes all
+15 reachable in the saved map. `coverage_mission.replay_saved_map` resolves them
+in under a second; 65 selected offline tests pass. **Do not claim a full Gazebo
+pass from this kinematic replay.** Reuse the saved-map command in the coverage
+document for debugging, then run one final truth-monitored Gazebo mission when
+focused checks are satisfactory. Pi/real-camera timing and physical failsafes
+remain unvalidated; QR decoding, delivery and return remain deferred.
+
+The next two 2× full-world flights also did **not** pass: one ended `BLOCKED`
+with zero pending but 33 incorrectly counted contextual-clear cells; the next
+ended `ABORTED` after 46 planner timeouts and stale zero-command HOLD admission.
+Those two software issues have targeted changes and 68 selected tests pass,
+but there has been no confirming full Gazebo flight. See
+`world/integration/FULL_MISSION_COVERAGE.md` for truth results and limitations.
+
+The full-mission profile now provisionally treats all non-red dark/black pixels
+in fresh, correctly shaped frames as clear ground; the old green/print support
+blurs are disabled. Entirely black *received* frames are no longer rejected
+on content alone, per user decision; missing/stale frames remain invalid.
+68 selected tests and two saved-map replays pass. A fresh camera-fault black
+frame could be misclassified as clear; real color discrimination remains a
+site-test requirement. No new full-world flight has passed yet.
+
+The staged full-world run in
+`world/integration/artifacts/full_corridor1x_20261007` subsequently reached
+manager and coverage `COMPLETE`: 1× corridor, synchronized 2× Gazebo/SITL
+coverage, zero planner timeouts, and zero sampled red/fence violations.
+The user accepted it as a **Gazebo mission pass with documented exceptions**.
+The unchanged independent evaluator still flags 25 unviewed cells (all in a
+0.25 m² red clearance-excluded patch) and one 0.307 m credited-point error
+against 0.300 m. See `world/integration/FULL_MISSION_COVERAGE.md`; Pi and
+physical-flight validation remain open.
+
+## Pi camera integration status — 2026-10-07
+
+An IMX296/Picamera2 dual-camera acquisition adapter, a hardware-independent
+coverage sensor seam, and a ground-only concurrency/perception benchmark are
+now in `world/integration/`. The no-GUI banner path avoids debug copies. The
+new camera tests and selected regressions pass (51 total). This host is x86
+and has no Picamera2, so **no Pi throughput or real-camera result is claimed**.
+The full mission still uses Gazebo LiDAR/camera subscriptions and is not a
+flight-ready Pi runner. See `world/integration/PI_HARDWARE_HANDOFF.md` for the
+Pi commands, provisional timing checks and missing LiDAR/FC integration data.

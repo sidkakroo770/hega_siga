@@ -4,7 +4,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from corridor_altitude import AltitudeController
-from experimental_corridor_manager import Telemetry, coverage_entry_registered
+from experimental_corridor_manager import (
+    Telemetry, coverage_entry_registered, north_velocity_in_body, field_advance_health)
 from coverage_mission.config import Config
 from coverage_mission.engine import Engine
 from coverage_mission.geometry import Pose
@@ -14,6 +15,28 @@ from coverage_mission.planning import GroundMap, route
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config/full_mission_coverage.json"
+
+
+def test_field_advance_command_and_progress_use_same_north_axis():
+    for yaw in (0., math.pi/2, -math.pi/2, math.pi, .3):
+        forward, right = north_velocity_in_body(.15, yaw)
+        north = forward * math.cos(yaw) - right * math.sin(yaw)
+        east = forward * math.sin(yaw) + right * math.cos(yaw)
+        assert abs(north - .15) < 1e-12
+        assert abs(east) < 1e-12
+
+
+def test_field_advance_health_checks_both_axes_and_heading():
+    cfg = Config.load(CONFIG)
+    pose = Telemetry(x_m=-19.4, y_m=-4., z_m=-2., vx_m_s=0., vy_m_s=0.,
+                     yaw_rad=0., position_time=10., attitude_time=10.)
+    assert field_advance_health(pose, cfg, 10.2)
+    assert not field_advance_health(pose, cfg, 10.6)
+    pose.y_m = 100.
+    assert not field_advance_health(pose, cfg, 10.2)
+    pose.y_m = -4.
+    pose.vy_m_s = math.nan
+    assert not field_advance_health(pose, cfg, 10.2)
 
 
 def test_exit_guard_accepts_registered_pose_and_rejects_stale_or_wrong_origin():
@@ -76,7 +99,10 @@ def test_reachable_coverage_precedes_unknown_ordered_point():
     plan = CoveragePlan(cfg)
     ground.observed[:] = True
     first, reachable = 0, len(plan.points)-1
-    ground.observed[tuple(plan.cells[first])] = False
+    # A single unreadable pixel is now an explicitly bounded interior
+    # print/texture hole; use a genuinely unknown patch for this contract.
+    cell=plan.cells[first]
+    ground.observed[cell[0]-4:cell[0]+5,cell[1]-4:cell[1]+5]=False
     ground.refresh()
     plan.done[:] = True
     plan.done[[first, reachable]] = False
@@ -88,18 +114,20 @@ def test_reachable_coverage_precedes_unknown_ordered_point():
     assert first in plan.pending()
 
 
-def test_nearby_ordered_frontier_keeps_serpentine_priority():
+def test_unknown_ordered_frontier_does_not_displace_known_reachable_work():
     cfg = Config.load(CONFIG)
     ground = GroundMap(cfg)
     plan = CoveragePlan(cfg)
     ground.observed[:] = True
     first, later = 0, len(plan.points)-1
-    ground.observed[tuple(plan.cells[first])] = False
+    cell=plan.cells[first]
+    ground.observed[cell[0]-4:cell[0]+5,cell[1]-4:cell[1]+5]=False
     ground.refresh()
     plan.done[:] = True
     plan.done[[first, later]] = False
     current = plan.points[first] + [1.0, 1.0]
-    assert tuple(plan.reachable_target(ground, current)) == tuple(plan.points[first])
+    assert tuple(plan.reachable_target(ground, current)) == tuple(plan.points[later])
+    assert first in plan.pending()
 
 
 def test_unknown_distant_row_uses_local_observable_frontier():
@@ -153,8 +181,12 @@ def test_only_confirmed_red_enclosure_exempts_unreachable_ground():
     assert decision.state == "SETTLING"
     assert decision.pending == decision.unseen == 0
 
-    ground.confirmed[180:184, 150] = False  # Reopen a non-red corridor.
+    ground.confirmed[180:184, 150] = False  # Raw gap is narrower than clearance.
     ground.red[180:184, 150] = False
+    ground.refresh()
+    assert ground.enclosed[210, 150]
+    ground.confirmed[180:184, 138:163] = False  # Open a clearance-sized corridor.
+    ground.red[180:184, 138:163] = False
     ground.refresh()
     assert not ground.enclosed[210, 150]
 

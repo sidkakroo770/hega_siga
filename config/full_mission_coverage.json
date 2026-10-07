@@ -16,6 +16,13 @@
   "arrival": 0.3,
   "speed": 0.75,
   "no_progress": 120.0,
+  "relocation_credit_speed": 0.2,
+  "minimum_observation_progress_area": 2.0,
+  "assume_nonred_ground_clear": true,
+  "green_texture_support_m": 0.0,
+  "green_texture_mean_min": 15,
+  "neutral_print_support_m": 0.0,
+  "small_unknown_hole_area": 0.2,
   "downward_topic": "/iris/camera_downward/image_raw",
   "clock_topic": "/world/miss2_world/clock"
 }

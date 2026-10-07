@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- Gazebo-only negative case: static bar spans the corridor at the same
+       scan plane as the supported protrusion fixtures. No bypass exists. -->
+  <model name="blocked_passage">
+    <static>true</static>
+    <pose>-4.0 -26.0 1.5 0 0 0</pose>
+    <link name="body">
+      <collision name="collision">
+        <geometry><box><size>3.8 0.8 3.0</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>3.8 0.8 3.0</size></box></geometry>
+        <material>
+          <ambient>0.8 0.1 0.1 1</ambient>
+          <diffuse>0.8 0.1 0.1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

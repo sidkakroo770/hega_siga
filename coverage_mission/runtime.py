@@ -19,7 +19,9 @@ import threading
 import time
 import numpy as np
 from .config import Config
+from .field_frame import FieldFrame
 from .geometry import Pose, PoseHistory, decode_image, UnusableImage, validated_hsv
+from .async_logs import AsyncJsonlWriter
 from scipy.spatial.transform import Rotation
 
 
@@ -119,6 +121,13 @@ def put_latest(q,value):
     except queue.Full: pass
 
 
+def safe_zero_hold(decision, *, decision_recent, sensors_healthy):
+    """Admit only a fresh worker's zero-command hold without fresh motion data."""
+    return bool(decision_recent and sensors_healthy and decision and
+                decision.get('state') in ('HOLD','OBSERVE','SETTLING') and
+                all(abs(decision.get(k,0.))<1e-9 for k in ('vn','ve','vd','yaw')))
+
+
 def clock_diagnostics(sync):
     # Unknown/rejected synchronization is a normal HOLD condition. JSONL uses
     # null, not non-standard Infinity/NaN that could itself abort supervision.
@@ -203,7 +212,23 @@ def job_due(wall,last_wall,source,last_source,cfg):
     return wall-last_wall>=cfg.minimum_worker_wall_period and source-last_source>=cfg.decision_period
 
 
-def worker(cfg,inputs,outputs,gui,artifact):
+def preview_worker(frames,abort_requested):
+    import cv2
+    try:
+        while True:
+            item=frames.get()
+            if item is None: break
+            view,map_image=item
+            cv2.imshow('Coverage downward camera',view)
+            cv2.imshow('Coverage ground map (north up)',map_image)
+            if cv2.waitKey(1)&255==ord('q'):
+                abort_requested.set()
+                break
+    finally:
+        cv2.destroyAllWindows()
+
+
+def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
     import cv2
     from .engine import Engine
     engine=Engine(cfg)
@@ -221,17 +246,20 @@ def worker(cfg,inputs,outputs,gui,artifact):
             if delay: time.sleep(delay)
             processing_started=time.monotonic()
             try:
+                raw_hsv=None
                 if raw_frame is not None and raw_frame[3]!=last_camera_seq:
                     last_camera_seq=raw_frame[3]
                     try:
-                        validated_hsv(raw_frame[2],cfg)
+                        raw_hsv=validated_hsv(raw_frame[2],cfg)
                         camera_t=raw_frame[0]
                     except UnusableImage:
                         pass
                 if frame_pose is not None and seq!=last_seq and (abs(frame_pose.alt-cfg.altitude)<=cfg.altitude_tolerance
                         and abs(frame_pose.roll)<=cfg.max_tilt and abs(frame_pose.pitch)<=cfg.max_tilt):
                     try:
-                        engine.observe(image,frame_pose); last_seq=seq
+                        engine.observe(image,frame_pose,
+                                       hsv=raw_hsv if raw_frame is not None and raw_frame[3]==seq else None)
+                        last_seq=seq
                         view_image=image
                     except UnusableImage:
                         pass  # No observations/coverage credited; freshness expires.
@@ -255,8 +283,10 @@ def worker(cfg,inputs,outputs,gui,artifact):
                     tracked_segment=None
                 payload['observation_pose']=vars(engine.last_frame_pose) if engine.last_frame_pose else None
                 payload['processing_ms']=(time.monotonic()-processing_started)*1000
+                payload['planning_ms']=engine.last_planning_wall_ms
+                payload['planning_timeouts']=engine.planning_timeouts
                 put_latest(outputs,payload)
-                if gui:
+                if gui and preview_frames is not None and (seq % 5 == 0):
                     view=view_image.copy()
                     cv2.putText(view,decision.state,(12,25),cv2.FONT_HERSHEY_SIMPLEX,.7,(0,255,255),2)
                     if decision.entered is not None:
@@ -272,17 +302,14 @@ def worker(cfg,inputs,outputs,gui,artifact):
                         if g.contains(c): map_image[c]=(255,255,0)
                     c=g.cell(current.xy)
                     if g.contains(c): cv2.circle(map_image,(c[1],c[0]),2,(255,255,255),-1)
-                    cv2.imshow('Coverage downward camera',view)
-                    cv2.imshow('Coverage ground map (north up)',cv2.resize(map_image[::-1],(600,600),interpolation=cv2.INTER_NEAREST))
-                    if cv2.waitKey(1)&255==ord('q'):
-                        put_latest(outputs,{'state':'ABORTED','reason':'GUI quit'}); return
+                    put_latest(preview_frames,(view,cv2.resize(map_image[::-1],(600,600),
+                                                   interpolation=cv2.INTER_NEAREST)))
             except Exception as exc:
                 put_latest(outputs,{'state':'ABORTED','reason':f'Worker: {exc}'}); return
     finally:
         np.savez_compressed(artifact,observed=engine.ground.observed,red=engine.ground.red,
                             confirmed=engine.ground.confirmed,enclosed=engine.ground.enclosed,
                             points=engine.plan.points,done=engine.plan.done,excluded=engine.plan.excluded)
-        cv2.destroyAllWindows()
 
 
 class Sensors:
@@ -326,6 +353,9 @@ def request_streams(master):
     for message,us in ((32,20000),(30,20000),(33,50000),(193,100000)):
         master.mav.command_long_send(master.target_system,master.target_component,
             mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,0,message,us,0,0,0,0,0)
+    master.mav.command_long_send(master.target_system,master.target_component,
+        mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,0,
+        mavutil.mavlink.MAVLINK_MSG_ID_GPS_GLOBAL_ORIGIN,1000000,0,0,0,0,0)
 
 
 def velocity(master,vn,ve,vd,yaw):
@@ -342,7 +372,8 @@ def hold(master,position,yaw):
         2552,position.x,position.y,position.z,0,0,0,0,0,0,yaw,0)
 
 
-def main(argv=None, master=None):
+def main(argv=None, master=None, command_service=None, command_token=None,
+         config_override=None, initial_origin=None, sensors_override=None):
     from pymavlink import mavutil
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path,default=Path(__file__).parents[1]/'config/coverage.json')
@@ -355,7 +386,14 @@ def main(argv=None, master=None):
                         help='Abort if synchronized airborne entry is not achieved')
     parser.add_argument('--log',type=Path,default=Path(__file__).parents[1]/'artifacts/runtime.jsonl')
     parser.add_argument('--faults',type=Path,help='Owned SITL harness only; never use for flight')
-    args=parser.parse_args(argv); cfg=Config.load(args.config)
+    args=parser.parse_args(argv); cfg=config_override or Config.load(args.config)
+    if cfg.geofence_latlon is not None and config_override is None:
+        raise ValueError('GPS geofence requires registered FC origin at runtime entry')
+    if cfg.geofence_latlon is not None and initial_origin is None:
+        raise ValueError('Registered geofence requires an FC origin continuity token')
+    field_frame=FieldFrame(cfg)
+    if command_service is not None and (master is None or command_token is None):
+        raise ValueError('Integrated command authority requires master and stage token')
     faults=None
     if args.faults:
         from .faults import Faults
@@ -365,7 +403,8 @@ def main(argv=None, master=None):
         'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                          for p in Path(__file__).parent.glob('*.py')}}
     args.log.with_suffix('.manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-    sensors=Sensors(cfg); sync=RoundTripClock(args.clock_offset)
+    sensors=sensors_override if sensors_override is not None else Sensors(cfg)
+    sync=RoundTripClock(args.clock_offset)
     owns_master=master is None
     if owns_master:
         master=mavutil.mavlink_connection(args.mavlink,source_system=245)
@@ -377,11 +416,18 @@ def main(argv=None, master=None):
     master.target_component=hb.get_srcComponent()
     request_streams(master)
     ctx=mp.get_context('spawn'); jobs=ctx.Queue(maxsize=1); results=ctx.Queue(maxsize=1)
+    preview_frames=ctx.Queue(maxsize=1) if not args.no_gui else None
+    preview_abort=ctx.Event() if not args.no_gui else None
+    preview_proc=(ctx.Process(target=preview_worker,args=(preview_frames,preview_abort),
+                              name='coverage-preview',daemon=True)
+                  if preview_frames is not None else None)
+    if preview_proc is not None: preview_proc.start()
     args.log.parent.mkdir(parents=True,exist_ok=True)
-    proc=ctx.Process(target=worker,args=(cfg,jobs,results,not args.no_gui,args.log.with_suffix('.map.npz')),daemon=True)
+    proc=ctx.Process(target=worker,args=(cfg,jobs,results,not args.no_gui,
+                     args.log.with_suffix('.map.npz'),preview_frames),daemon=True)
     proc.start()
     position=attitude=altitude=None
-    ekf_flags=0; ekf_wall=0; origin=None
+    ekf_flags=0; ekf_wall=0; origin=initial_origin
     heartbeat_wall=time.monotonic(); pos_wall=att_wall=alt_wall=0
     telemetry=TelemetryHistory(); history=telemetry.poses
     frame_matches={}
@@ -390,10 +436,12 @@ def main(argv=None, master=None):
     last_request=time.monotonic(); last_sync=0; started=time.monotonic(); active=False; entry_t=None
     state='WAITING'; reason='Awaiting synchronized airborne entry'; hold_pos=None
     missing_since=None; exit_code=1; last_logged=None; last_command=0
+    residence_entered=None; residence_warned=False
     args.log.parent.mkdir(parents=True,exist_ok=True)
     print(f'[COVERAGE] {"FLIGHT" if args.fly else "INSPECT ONLY"}; never arms/takes off',flush=True)
+    logs=AsyncJsonlWriter(args.log)
     try:
-        with args.log.open('w') as log, args.log.with_suffix('.supervision.jsonl').open('w') as supervision:
+        with logs:
             last_supervision=0
             while time.monotonic()-started<args.max_wall_seconds:
                 now=time.monotonic()
@@ -403,7 +451,11 @@ def main(argv=None, master=None):
                 injected=faults.active(clock[0]-entry_t) if faults and clock and entry_t is not None else {}
                 image=frames[-1] if frames else None
                 if error: raise RuntimeError(error)
+                if preview_abort is not None and preview_abort.is_set():
+                    raise RuntimeError('Coverage GUI quit requested')
                 if not proc.is_alive(): raise RuntimeError('Perception/planning worker stopped')
+                if command_service is not None and not command_service.healthy():
+                    raise RuntimeError('Mission command sender stopped or missed its health deadline')
                 for _ in range(300):
                     msg=master.recv_match(blocking=False)
                     if msg is None: break
@@ -457,6 +509,7 @@ def main(argv=None, master=None):
                 if pose and 'pose_noise' in injected: pose=noise(pose)
                 if pose and 'yaw_jump' in injected: pose=replace(pose,yaw=pose.yaw+math.pi/2)
                 if pose and 'position_jump' in injected: pose=replace(pose,n=pose.n+1)
+                if pose: pose=field_frame.pose(pose)
                 pose_healthy=bool(pose and heartbeat_ok and estimator_ok and sync.ready and clock and
                     now-max(pos_wall,0)<cfg.sensor_wall_age and now-att_wall<cfg.sensor_wall_age and
                     now-alt_wall<cfg.sensor_wall_age and
@@ -465,6 +518,7 @@ def main(argv=None, master=None):
                 raw_frame=image if healthy and 0<=clock[0]-image[0]<=cfg.frame_age else None
                 image,frame_pose=matched_frame(frames,history,clock[0],cfg,frame_matches) if healthy else (None,None)
                 if frame_pose and 'pose_noise' in injected: frame_pose=noise(frame_pose)
+                if frame_pose: frame_pose=field_frame.pose(frame_pose)
                 airborne=bool(pose and abs(pose.alt-cfg.altitude)<=cfg.altitude_tolerance)
                 due=bool(clock and job_due(now,last_job,clock[0],last_job_source,cfg))
                 if healthy and frame_pose and (active or airborne) and due:
@@ -476,18 +530,42 @@ def main(argv=None, master=None):
                     put_latest(jobs,(-1,None,None,pose,injected.get('worker_delay',0),raw_frame))
                     last_job=now; last_job_source=clock[0]
                 try:
-                    while True: latest_result=results.get_nowait(); result_wall=now
+                    while True:
+                        latest_result=results.get_nowait(); result_wall=now
+                        if 'entered' in latest_result:
+                            residence_entered=latest_result['entered']
+                            if residence_entered is None:
+                                residence_warned=False
                 except queue.Empty: pass
+                if (residence_entered is not None and clock
+                        and now-clock[1]<cfg.sensor_wall_age):
+                    residence_elapsed=clock[0]-residence_entered
+                    if residence_elapsed>=5 and not residence_warned:
+                        residence_warned=True
+                        print(f'[RED] autonomous warning: {max(0.,10-residence_elapsed):.1f}s remaining',flush=True)
+                        logs.submit('supervision',{'event':'RED_WARNING','t':clock[0],
+                                                    'elapsed':residence_elapsed})
+                    if residence_elapsed>=10:
+                        state='ABORTED'; reason='Red-zone ten-second limit exceeded'; break
                 if latest_result and latest_result.get('state')=='ABORTED':
                     state='ABORTED'; reason=latest_result['reason']; break
                 if not active and healthy and frame_pose and armed and guided and abs(pose.alt-cfg.altitude)<=cfg.altitude_tolerance and abs(pose.vd)<.15:
                     active=True; entry_t=clock[0]; print('[ENTRY] Settled airborne state accepted',flush=True)
-                valid=bool(active and pose_healthy and latest_result and
-                    now-result_wall<=cfg.worker_wall_age and
+                decision_recent=bool(active and pose_healthy and latest_result and
+                    now-result_wall<=cfg.worker_wall_age)
+                motion_valid=bool(decision_recent and
                     0<=clock[0]-latest_result.get('source_t',-100)<=cfg.frame_age and
                     ((healthy and 0<=clock[0]-latest_result.get('camera_t',-100)<=cfg.frame_age
                       and 0<=clock[0]-latest_result.get('frame_t',-100)<=cfg.mapping_motion_grace)
                      or latest_result.get('state')=='ESCAPE'))
+                # An old decision must never authorize motion. A *newly
+                # produced zero-command HOLD* can remain valid while planning
+                # takes longer than an accelerated source-time frame age; the
+                # current camera, pose and worker must still be healthy. This
+                # lets the engine's bounded no-progress timer decide liveness
+                # without turning a safe hold into a false worker outage.
+                valid=motion_valid or safe_zero_hold(latest_result,
+                    decision_recent=decision_recent,sensors_healthy=healthy)
                 command=[0.,0.,0.]
                 if valid:
                     state=latest_result['state']; reason=latest_result['reason']; missing_since=None
@@ -505,14 +583,19 @@ def main(argv=None, master=None):
                 if args.fly and active and guided and armed and now-last_command>=.02:
                     # Keep one GUIDED control submode during supervision. Repeated
                     # position/velocity switching destabilized the Iris test model.
-                    velocity(master,*command,cfg.heading)
+                    local_command=(*field_frame.local_vector(command[:2]),command[2])
+                    if command_service is not None:
+                        command_service.publish(*local_command,cfg.heading+cfg.field_yaw,
+                                                token=command_token, frame='local')
+                    else:
+                        velocity(master,*local_command,cfg.heading+cfg.field_yaw)
                     last_command=now
                 if active and now-last_supervision>=.05:
-                    supervision.write(json.dumps({'t':clock[0],'wall':now,'state':state,'valid':valid,'command':command,
+                    logs.submit('supervision',{'t':clock[0],'wall':now,'state':state,'valid':valid,'command':command,
                         'control':'velocity',
                         'faults':injected,'position':[position.x,position.y] if position else None,
-                        'velocity':[position.vx,position.vy,position.vz] if position else None})+'\n')
-                    supervision.flush(); last_supervision=now
+                        'velocity':[position.vx,position.vy,position.vz] if position else None})
+                    last_supervision=now
                 if latest_result and latest_result!=last_logged:
                     record=dict(latest_result,wall=now,**clock_diagnostics(sync),applied=valid and args.fly,
                         supervisor_state=state,healthy=healthy,
@@ -520,7 +603,7 @@ def main(argv=None, master=None):
                         decision_age=clock[0]-latest_result.get('source_t',0) if clock else None,
                         frame_age=clock[0]-latest_result.get('frame_t',0) if clock else None,
                         worker_age=now-result_wall)
-                    log.write(json.dumps(record,allow_nan=False)+'\n'); log.flush(); last_logged=latest_result.copy()
+                    logs.submit('decision',record); last_logged=latest_result.copy()
                 if now-last_print>=2:
                     print(f'[{state}] {reason}; clock_error={sync.error:.3f} pending={latest_result.get("pending") if latest_result else None}',flush=True)
                     last_print=now
@@ -529,21 +612,48 @@ def main(argv=None, master=None):
     except (Exception,KeyboardInterrupt) as exc:
         state='ABORTED'; reason=str(exc) or 'Keyboard interrupt'
     finally:
-        if args.fly and hb.custom_mode==4 and hb.base_mode&128:
-            # Latch one hold position only with fresh localization. No automatic LAND.
-            if position and time.monotonic()-pos_wall<cfg.sensor_wall_age:
-                hold_pos=hold_pos or position
-                for _ in range(10): hold(master,hold_pos,cfg.heading); time.sleep(.05)
-            else:
-                velocity(master,0,0,0,cfg.heading)
-                print('[FAULT] Localization stale: hover not assured; autopilot/operator contingency required',flush=True)
+        # Terminal commands are best-effort; a broken transport must never
+        # bypass worker cleanup or the persisted result. Never send a position
+        # target merely because packets are recent when EKF/authority is invalid.
+        try:
+            now=time.monotonic()
+            authority_ok=bool(now-heartbeat_wall<=cfg.heartbeat_wall_age
+                              and hb.custom_mode==4 and hb.base_mode&128)
+            localization_ok=bool(estimator_ok and sync.ready and origin is not None
+                                 and position and now-pos_wall<cfg.sensor_wall_age)
+            if args.fly and authority_ok:
+                if command_service is not None:
+                    command_service.publish(0.,0.,0.,cfg.heading+cfg.field_yaw,
+                                            token=command_token,frame='local')
+                elif localization_ok:
+                    hold_pos=hold_pos or position
+                    for _ in range(10):
+                        hold(master,hold_pos,cfg.heading+cfg.field_yaw)
+                        time.sleep(.05)
+                else:
+                    velocity(master,0,0,0,cfg.heading+cfg.field_yaw)
+                    print('[FAULT] Localization invalid: position hold forbidden; FC/operator contingency required',flush=True)
+        except Exception as exc:
+            state='ABORTED'; exit_code=1
+            reason=f'Terminal command failed: {exc}'
+            print(f'[FAULT] {reason}',flush=True)
         put_latest(jobs,None); proc.join(timeout=2)
         if proc.is_alive(): proc.terminate(); proc.join(timeout=2)
+        if preview_proc is not None:
+            put_latest(preview_frames,None)
+            preview_proc.join(timeout=.5)
+            if preview_proc.is_alive(): preview_proc.terminate(); preview_proc.join(timeout=.5)
+            preview_frames.close()
+        logs.close(timeout_s=.5)
         if owns_master:
             master.close()
+        if logs.failure is not None or logs.dropped:
+            print(f'[DIAGNOSTICS] coverage JSONL loss: dropped={logs.dropped} error={logs.failure}',flush=True)
         print(f'[{state}] {reason}',flush=True)
         args.log.with_suffix('.result.json').write_text(json.dumps({'state':state,'reason':reason,
-            'exit_code':exit_code,'last_decision':latest_result},indent=2,allow_nan=False)+'\n')
+            'exit_code':exit_code,'last_decision':latest_result,
+            'jsonl_dropped':logs.dropped,'jsonl_error':str(logs.failure) if logs.failure else None,
+            'jsonl_drained':logs.drained},indent=2,allow_nan=False)+'\n')
     return exit_code
 
 

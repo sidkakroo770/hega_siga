@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- Gazebo-only mirror of the left-wall obstacle fixture. -->
+  <model name="right_wall_protrusion">
+    <static>true</static>
+    <pose>-2.65 -26.0 1.5 0 0 0</pose>
+    <link name="body">
+      <collision name="collision">
+        <geometry><box><size>1.2 0.8 3.0</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <geometry><box><size>1.2 0.8 3.0</size></box></geometry>
+        <material>
+          <ambient>0.8 0.2 0.1 1</ambient>
+          <diffuse>0.8 0.2 0.1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

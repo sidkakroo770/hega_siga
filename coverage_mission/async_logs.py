@@ -16,6 +16,7 @@ class AsyncJsonlWriter:
             raise ValueError("max_records must be positive")
         self.decision_path = Path(decision_path)
         self.supervision_path = self.decision_path.with_suffix(".supervision.jsonl")
+        self.qr_path = self.decision_path.with_suffix('.qr.jsonl')
         self._records = queue.Queue(maxsize=max_records)
         self._closing = threading.Event()
         self.dropped = 0
@@ -25,7 +26,7 @@ class AsyncJsonlWriter:
         self._thread.start()
 
     def submit(self, channel, record):
-        if channel not in ("decision", "supervision"):
+        if channel not in ("decision", "supervision", "qr"):
             raise ValueError("unknown coverage log channel")
         if self._closing.is_set() or self.failure is not None:
             self.dropped += 1
@@ -51,8 +52,9 @@ class AsyncJsonlWriter:
         try:
             self.decision_path.parent.mkdir(parents=True, exist_ok=True)
             with self.decision_path.open("w", buffering=65536) as decision, \
-                    self.supervision_path.open("w", buffering=65536) as supervision:
-                streams = {"decision": decision, "supervision": supervision}
+                    self.supervision_path.open("w", buffering=65536) as supervision, \
+                    self.qr_path.open('w', buffering=65536) as qr:
+                streams = {"decision": decision, "supervision": supervision,'qr':qr}
                 while not self._closing.is_set() or not self._records.empty():
                     try:
                         channel, record = self._records.get(timeout=0.1)

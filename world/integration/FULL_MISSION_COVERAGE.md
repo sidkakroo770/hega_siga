@@ -1,5 +1,15 @@
 # Full mission: corridor to coverage (Gazebo)
 
+## Current default mission — 2026-10-08
+
+The default runner now includes initial/field QR inspection and a return extension
+after the matched target's five-second 5 m hold. Return retains field safety,
+acquires the orange banner, repeats a fresh native corridor FSM and requests
+exterior landing with on-ground/disarmed confirmation. Current validation and
+launch instructions are in `../../RETURN_MISSION_IMPLEMENTATION_STATUS.md`.
+The older segment description below applies to the explicit coverage-only
+regression profile, not the current full-mission endpoint.
+
 `experimental_corridor_manager.py` now runs the original banner/approach/LiDAR
 corridor stages unchanged through `EXIT_DETECTION`. On `CORRIDOR_EXITED` it
 advances north into the registered field inset, climbs to 10 m HOME-relative
@@ -47,7 +57,12 @@ completion changes pass unit/synthetic tests but **have not yet had a fresh
 end-to-end Gazebo flight**. Do not label the controller `COMPLETE` based only
 on the earlier independent geometry result.
 
-## Run the full simulation
+## Run the coverage-only regression simulation
+
+The default manager now implements the initial/field QR mission and a 5 m
+startup. For that complete sequence, use the repository-root
+`QR_MISSION_IMPLEMENTATION_STATUS.md` instructions. The following retains
+the historical coverage-only regression and deliberately skips QR tasks.
 
 Use separate terminals. First, with the usual Gazebo/SITL dependencies installed:
 
@@ -94,7 +109,7 @@ export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export PYTHONPATH=/home/sid/[competition]_mission2:/home/sid/[competition]_mission2/approach:/home/sid/[competition]_mission2/corridor:/usr/lib/python3/dist-packages
 python3 -u /home/sid/[competition]_mission2/world/integration/experimental_corridor_manager.py \
-  --start-mission --takeoff-altitude 3 \
+  --start-mission --coverage-only --takeoff-altitude 3 \
   --mavlink udpin:0.0.0.0:14552 --banner-loss-frames 5 \
   --coverage-max-wall-seconds 7200
 ```
@@ -453,4 +468,3 @@ silently changed to manufacture a strict pass. Do not describe the independent
 evaluator's two failed booleans as passing, and do not treat this as Raspberry
 Pi/real-camera/real-flight certification. No second long coverage flight was
 launched after this completion.
-

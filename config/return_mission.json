@@ -1,0 +1,15 @@
+{
+  "entrance_n": -20.0,
+  "entrance_e": 4.1,
+  "heading": 3.141592653589793,
+  "stand_off": 6.0,
+  "acquisition_altitude": 5.0,
+  "delivery_dwell": 5.0,
+  "speed": 0.5,
+  "entry_half_width": 0.9,
+  "entry_outside_limit": 0.8,
+  "far_mouth_distance": 10.1,
+  "landing_clearance": 2.0,
+  "orange_hsv_low": [5, 100, 80],
+  "orange_hsv_high": [25, 255, 255]
+}

@@ -100,6 +100,7 @@ class Engine:
         self.turn_settle_t=None
         self.repair_viewpoint=False
         self.repair_settle_t=None
+        self.inspection_pause=None
 
     def observe(self,frame,pose,hsv=None):
         hsv=validated_hsv(frame,self.cfg) if hsv is None else hsv
@@ -190,9 +191,9 @@ class Engine:
                 return path[index:]
         return path
 
-    def step(self,pose,camera_t=-1.):
+    def step(self,pose,camera_t=-1.,inspection=None,descent_active=False,transition=None):
         cfg=self.cfg; g=self.ground
-        d=Decision('HOLD','Waiting for valid observation',yaw=cfg.heading,
+        d=Decision('HOLD','Waiting for valid observation',yaw=inspection.yaw if inspection is not None else cfg.heading,
                    source_t=pose.t,frame_t=g.last_t if math.isfinite(g.last_t) else -1.,camera_t=camera_t,
                    pending=len(self.plan.pending()),
                    unseen=int((~g.observed & ~g.contextual_clear & ~g.red & ~g.enclosed).sum()))
@@ -219,14 +220,16 @@ class Engine:
         if self.last_pose and pose.t-self.last_pose.t>.5: self.last_velocity[:]=0
         self.last_pose=pose
         cell=g.cell(pose.xy)
-        if not g.contains(cell) or not g.inset[cell]:
+        admitted=bool(transition is not None and transition.allows(pose))
+        if (not g.contains(cell) or not g.inset[cell]) and not admitted:
             self.terminal='ABORTED: outside operational fence'
         inside=g.inside_red(pose.xy)
         self.residence.update(pose.t,inside,self._entry_hint())
         d.entered=self.residence.entered; d.warned=self.residence.warned; d.failed=self.residence.failed
         if self.terminal:
             d.state,d.reason=self.terminal.split(': ',1); return d
-        if abs(pose.alt-cfg.altitude)>cfg.altitude_tolerance:
+        intentional_descent=descent_active or (inspection is not None and inspection.state in ('TARGET_DESCEND','TARGET_HOLD_5M'))
+        if (not intentional_descent and abs(pose.alt-cfg.altitude)>cfg.altitude_tolerance):
             d.reason='Altitude outside coverage envelope'; return d
         if abs(pose.roll)>cfg.max_tilt or abs(pose.pitch)>cfg.max_tilt:
             d.reason='Attitude outside projection envelope'; return d
@@ -236,12 +239,44 @@ class Engine:
         # No new map evidence or traversal credit is manufactured during this grace.
         camera_live=0<=pose.t-camera_t<=cfg.frame_age
         mapping_grace=camera_live and 0<=pose.t-g.last_t<=cfg.mapping_motion_grace
-        escape=not g.free[cell]
+        escape=(not transition.line_clear(g,pose.xy,pose.xy,pose.alt) if admitted
+                else not g.free[cell])
+        if admitted and escape:
+            d.state='ABORTED'; d.reason='Entrance transition ground/clearance invalid'; return d
         if not (fresh or mapping_grace) and not (escape and np.any(g.red)):
             # Timer still runs. Mapping is frozen; runtime treats this as a hold/fault.
             self.last_velocity[:]=0
             d.reason='Stale/unmatched camera frame'; return d
         g.visits[cell]=min(65535,int(g.visits[cell])+1)
+        if self.residence.failed and not inside:
+            self.terminal='ABORTED: red-zone deadline exceeded'
+            d.state='ABORTED'; d.reason='Red-zone deadline exceeded'; return d
+        if inspection is not None and not escape:
+            # Only selection/progress timers pause; observation, residency and
+            # all safety gates above continue. Never credit inspection traversal.
+            if self.inspection_pause is None: self.inspection_pause=pose.t
+            self.path=[]; self.turn_braking=False; self.turn_settle_t=None
+            self.repair_viewpoint=False; self.repair_settle_t=None
+            inspection.source_t=pose.t; inspection.frame_t=d.frame_t
+            inspection.camera_t=camera_t; inspection.pending=d.pending; inspection.unseen=d.unseen
+            inspection.entered=d.entered; inspection.warned=d.warned; inspection.failed=d.failed
+            v=np.array([inspection.vn,inspection.ve])
+            for checked in (v,np.array([pose.vn,pose.ve])):
+                speed=np.linalg.norm(checked)
+                end=pose.xy+checked*(cfg.reaction_time+speed/(2*cfg.braking))
+                clear=(transition.line_clear(g,pose.xy,end,pose.alt) if admitted
+                       else g.line_clear(pose.xy,end))
+                if not clear:
+                    inspection.vn=inspection.ve=inspection.vd=0.
+                    inspection.state='BRAKE'; inspection.reason='QR stopping region not observed permissible'
+                    break
+            self.last_velocity[:]=0
+            return inspection
+        if self.inspection_pause is not None:
+            paused=pose.t-self.inspection_pause
+            if self.last_progress_t is not None: self.last_progress_t+=paused
+            if self.no_route_since is not None: self.no_route_since+=paused
+            self.inspection_pause=None
         if fresh and not escape: self.plan.update(pose,g)
         pending=self.plan.pending()
         unseen=~g.observed & ~g.contextual_clear & ~g.red & ~g.enclosed

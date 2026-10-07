@@ -1,5 +1,67 @@
 # [competition] Mission 2 — corridor integration and isolated corridor test handoff
 
+## Return staging hold / front-camera lifecycle — 2026-10-08
+
+Entrance admission now survives sensor/proposal holds during an authorised
+orange approach while motion is zero; geometry/red/clearance gates still apply.
+Forward subscription/decoding and the green preview stop after outbound exit;
+they resume for the orange approach in a labelled orange-mask window.
+175 regressions, the retained failed-position/map hold check and a GUI-enabled
+targeted return through confirmed landing passed (9 independent checks).
+See [RETURN_SENSOR_HOLD_FIX.md](RETURN_SENSOR_HOLD_FIX.md) for scope, evidence
+and the distinction between mission acquisition suspension and sensor power.
+
+## QR grass false-candidate correction — 2026-10-08
+
+The user's main-world flight exposed malformed/incomplete QR detections being
+projected and selected over grass. Geometry validation now rejects them before
+projection, and discovery requires three fresh stable exposures. Lost/no-progress
+inspections release navigation with bounded retries and coverage recovery time.
+The recorded geometry replay passed (83 rejected, 71 real observations retained),
+168 regressions passed and a GUI-enabled textured-ground field approach passed
+18 independent checks through nonmatch inspection, matching QR and safe 5 m
+descent. It recovered one genuine marker loss within its two-attempt bound.
+See [QR_FALSE_CANDIDATE_FIX.md](QR_FALSE_CANDIDATE_FIX.md) for evidence and scope.
+No new complete initial-QR-to-landing flight was performed after this correction.
+
+## Shared camera / QR near red — 2026-10-08
+
+Two short field-start Gazebo fixtures passed: safe-near-red centering/read/descent
+(15 independent checks) and too-close target exclusion (13 checks; controlled
+shutdown, not whole-mission completion). Seven new offline arbitration cases
+bring the selected regression suite to 148 passing tests. No normal mission
+priorities or safety thresholds changed. Details, command hierarchy, scope and
+reproduction commands: [QR_RED_ZONE_VALIDATION.md](QR_RED_ZONE_VALIDATION.md).
+Shared-camera behaviour is validated in Gazebo; Pi throughput remains unmeasured.
+
+## Return extension — 2026-10-08
+
+The default full mission now continues beyond the target hold toward the orange
+entrance, repeats the native corridor FSM and requests exterior landing. Use
+[RETURN_MISSION_IMPLEMENTATION_STATUS.md](RETURN_MISSION_IMPLEMENTATION_STATUS.md)
+for implementation, provisional operating envelopes and current validation status.
+The selected 141-test suite, saved-map replay, targeted return and complete
+initial-QR-to-landing Gazebo flight passed. Earlier QR-only results below
+remain historical evidence; `--qr-only` preserves that endpoint explicitly.
+
+## QR mission extension — 2026-10-08
+
+The default full mission now takes off to 5 m, makes a measured approximately
+1 m advance, centers/settles/reads the initial QR, then runs the existing
+banner/corridor sequence. After corridor exit it searches/inspects field QRs
+under the existing coverage safety supervisor. A matching decoded identity
+cancels unfinished coverage and ends the segment at verified 5 m hold.
+
+Use [QR_MISSION_IMPLEMENTATION_STATUS.md](QR_MISSION_IMPLEMENTATION_STATUS.md)
+for current validation evidence, black-and-white fixture generation, launch
+commands, provisional settings and hardware/organizer gaps. The earlier
+coverage-only 3 m startup profile remains available only with explicit
+`--coverage-only --takeoff-altitude 3`. Historical checkpoints below describe
+that earlier profile, not the new QR mission. At that QR-only checkpoint no
+return or payload action was implemented; the return extension above is now
+the default continuation. Payload actuation remains deferred. The Gazebo
+runner is still not a physical flight program.
+
 ## Latest implementation and Gazebo checkpoint — 2026-10-05
 
 The four previously unfinished integration items are now implemented in the
@@ -1415,4 +1477,3 @@ and has no Picamera2, so **no Pi throughput or real-camera result is claimed**.
 The full mission still uses Gazebo LiDAR/camera subscriptions and is not a
 flight-ready Pi runner. See `world/integration/PI_HARDWARE_HANDOFF.md` for the
 Pi commands, provisional timing checks and missing LiDAR/FC integration data.
-

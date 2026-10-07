@@ -12,10 +12,12 @@ def test_jsonl_writer_preserves_both_streams(tmp_path):
     logs = AsyncJsonlWriter(path)
     logs.submit("decision", {"state": "SWEEP"})
     logs.submit("supervision", {"valid": True})
+    logs.submit('qr',{'seq':42})
     assert logs.close(timeout_s=2.)
     assert logs.failure is None and logs.dropped == 0
     assert json.loads(path.read_text().strip()) == {"state": "SWEEP"}
     assert json.loads(path.with_suffix(".supervision.jsonl").read_text().strip()) == {"valid": True}
+    assert json.loads(path.with_suffix('.qr.jsonl').read_text().strip())=={'seq':42}
 
 
 def test_slow_disk_drops_records_without_stalling_supervisor(tmp_path, monkeypatch):

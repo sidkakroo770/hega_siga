@@ -1,0 +1,168 @@
+<?xml version='1.0' encoding='utf-8'?>
+<sdf version="1.9">
+  <model name="qr_markers">
+    <static>true</static>
+    <model name="qr_start">
+      <static>true</static>
+      <pose>0.0 -35.5 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_start.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="qr_nonmatch_early">
+      <static>true</static>
+      <pose>-4.0 -17.0 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_nonmatch_early.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="qr_target_early">
+      <static>true</static>
+      <pose>-3.0 -10.2 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_target_early.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="qr_nonmatch_west">
+      <static>true</static>
+      <pose>-8.5 9.6 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_nonmatch_west.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="qr_nonmatch_east">
+      <static>true</static>
+      <pose>9.2 8.4 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_nonmatch_east.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="qr_red_excluded">
+      <static>true</static>
+      <pose>0.0 2.0 0.12 0 0 0</pose>
+      <link name="print">
+        <visual name="qr">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>1.0 1.0</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <lighting>false</lighting>
+            <pbr>
+              <metal>
+                <albedo_map>model://qr_markers/materials/textures/qr_red_excluded.png</albedo_map>
+                <roughness>1</roughness>
+                <metalness>0</metalness>
+              </metal>
+            </pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </model>
+</sdf>

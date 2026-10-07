@@ -1,0 +1,68 @@
+[
+  {
+    "name": "qr_start",
+    "payload": "REF-001",
+    "world_enu": [
+      0.0,
+      -35.5,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  },
+  {
+    "name": "qr_nonmatch_early",
+    "payload": "OTHER-001",
+    "world_enu": [
+      -4.0,
+      -17.0,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  },
+  {
+    "name": "qr_target_early",
+    "payload": "REF-001",
+    "world_enu": [
+      -3.0,
+      -10.2,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  },
+  {
+    "name": "qr_nonmatch_west",
+    "payload": "OTHER-002",
+    "world_enu": [
+      -8.5,
+      9.6,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  },
+  {
+    "name": "qr_nonmatch_east",
+    "payload": "OTHER-003",
+    "world_enu": [
+      9.2,
+      8.4,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  },
+  {
+    "name": "qr_red_excluded",
+    "payload": "REF-001",
+    "world_enu": [
+      0.0,
+      2.0,
+      0.12
+    ],
+    "size": 1.0,
+    "texture_pixels": 928
+  }
+]

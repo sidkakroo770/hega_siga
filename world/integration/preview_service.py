@@ -30,12 +30,19 @@ class PreviewService:
         self.enabled = bool(enabled)
         self.dropped = 0
         self._process = None
+        self.title=title
+        self.start(title)
+
+    def start(self,title=None):
         if self.enabled:
+            if self.alive: return
+            if self._process is not None: self.stop()
+            self.title=title or self.title
             ctx = mp.get_context("spawn")
             self._frames = ctx.Queue(maxsize=1)
             self._escape = ctx.Event()
             self._process = ctx.Process(
-                target=_run_preview, args=(self._frames, self._escape, title),
+                target=_run_preview, args=(self._frames, self._escape, self.title),
                 name="corridor-preview", daemon=True)
             self._process.start()
 

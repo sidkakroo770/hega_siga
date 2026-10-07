@@ -15,6 +15,8 @@ import cv2
 from approach.autonomy.perception.hybrid_banner_detector import HybridBannerDetector
 from coverage_mission.config import Config
 from coverage_mission.geometry import red_regions
+from coverage_mission.geometry import Pose
+from coverage_mission.qr import QRService, QRConfig, decoder_self_check
 from .pi_camera import PiCameraStream
 
 
@@ -38,6 +40,9 @@ def main(argv=None):
     parser.add_argument('--fps', type=float, default=15)
     parser.add_argument('--output', type=Path, default=Path('artifacts/pi_camera_benchmark.json'))
     parser.add_argument('--gui', action='store_true', help='Preview only; benchmark again without it')
+    parser.add_argument('--qr',action='store_true',help='Include the isolated 5 Hz QR discovery worker')
+    parser.add_argument('--qr-stationary',action='store_true',
+                        help='GROUND TEST ONLY: also exercise 2 Hz selected-marker decoding')
     args = parser.parse_args(argv)
     if args.front_index == args.downward_index or args.seconds <= 0:
         parser.error('camera indexes must differ and duration must be positive')
@@ -46,6 +51,10 @@ def main(argv=None):
                PiCameraStream(args.downward_index, 'downward', fps=args.fps, history=2)]
     detector = HybridBannerDetector()
     cfg = Config()
+    if args.qr_stationary and not args.qr: parser.error('--qr-stationary requires --qr')
+    if args.qr: decoder_self_check()
+    qr_service=QRService(cfg,QRConfig()) if args.qr else None
+    qr_result=None
     seen = {'front': 0, 'downward': 0}
     processed = {'front': 0, 'downward': 0}
     processing_s = {'front': 0., 'downward': 0.}
@@ -72,6 +81,15 @@ def main(argv=None):
                     detector.detect(frame, debug=False)
                 else:
                     red_regions(frame, cfg)
+                    if qr_service:
+                        observed=qr_service.poll()
+                        if observed: qr_result=observed
+                        request={}
+                        # Synthetic pose only for this ground-only CPU workload;
+                        # never fed to flight control or claimed as calibration.
+                        if args.qr_stationary and qr_result and qr_result.get('observations'):
+                            request={'qr_read_since':0.,'qr_target':qr_result['observations'][0]['xy']}
+                        qr_service.submit(frames[-1],Pose(source_t,0,0,10),request)
                 elapsed = time.monotonic() - processing_start
                 processed[stream.name] += 1
                 processing_s[stream.name] += elapsed
@@ -101,12 +119,14 @@ def main(argv=None):
                   'processing_mean_ms': {name: 1000 * processing_s[name] / count if count else None
                                          for name, count in processed.items()},
                   'processing_peak_ms': {name: 1000 * value for name, value in processing_peak_s.items()},
-                  'samples': samples}
+                  'samples': samples,'qr_worker':qr_service.metrics if qr_service else None,
+                  'qr_synthetic_ground_benchmark':bool(qr_service)}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + '\n')
         print(f'Wrote {args.output}', flush=True)
         return result
     finally:
+        if qr_service: qr_service.close()
         for stream in streams:
             stream.close()
         if args.gui:

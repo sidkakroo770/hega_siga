@@ -1,0 +1,4 @@
+# Runtime also needs the distribution's libzbar0 (apt install libzbar0).
+pyzbar==0.1.9
+# Fixture generation only; not imported by flight control.
+qrcode==7.4.2

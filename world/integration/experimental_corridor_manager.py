@@ -11,13 +11,14 @@ os.environ.setdefault(
 )
 
 import argparse
+import json
 from contextlib import contextmanager
 import math
 import sys
 import threading
 import time
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -102,7 +103,10 @@ from startup_control import StartupConfig, StartupController, StartupFeedback
 
 from coverage_mission.config import Config as CoverageConfig
 from coverage_mission.field_frame import FieldFrame
-from coverage_mission.runtime import main as run_coverage
+from coverage_mission.runtime import main as run_coverage, Sensors as DownwardSensors
+from coverage_mission.qr import decoder_self_check
+from coverage_mission.return_mission import ReturnConfig
+from return_approach import ReturnApproach
 
 
 
@@ -114,6 +118,7 @@ from coverage_mission.runtime import main as run_coverage
 class ExperimentState(str, Enum):
 
     STARTUP = "STARTUP"
+    INITIAL_QR = "INITIAL_QR"
 
     BANNER_SEARCH = "BANNER_SEARCH"
 
@@ -138,6 +143,8 @@ class ExperimentState(str, Enum):
     ADVANCE_TO_FIELD = "ADVANCE_TO_FIELD"
 
     COVERAGE = "COVERAGE"
+    RETURN_EGRESS = "RETURN_EGRESS"
+    LANDING = "LANDING"
 
     COMPLETE = (
         "EXPERIMENT_COMPLETE"
@@ -170,6 +177,8 @@ latest_lidar_world_pose = None
 camera_sequence = 0
 camera_receipt_time = 0.0
 camera_source_stamp_ns = None
+forward_camera_active = True
+forward_camera_generation = 0
 scan_sequence = 0
 forward_processing_width = 640  # Gazebo regression mode; not IMX296 native resolution.
 camera_decode_errors = 0
@@ -190,6 +199,10 @@ def on_forward_image(
     global camera_source_stamp_ns
     global camera_decode_errors, last_camera_error_report
 
+    with sensor_lock:
+        if not forward_camera_active: return
+        generation=forward_camera_generation
+
     received = time.monotonic()
 
     try:
@@ -207,6 +220,7 @@ def on_forward_image(
     health_metrics.observe("camera_decode", time.monotonic() - received)
 
     with sensor_lock:
+        if not forward_camera_active or generation!=forward_camera_generation: return
         source_stamp = gazebo_source_stamp_ns(msg)
         if not camera_clock_gate.accept(source_stamp):
             return
@@ -341,6 +355,7 @@ class Telemetry:
     mode: str = "UNKNOWN"
     armed: bool = False
     authority_revoked: bool = False
+    landing_expected: bool = False
     authority_started: bool = False
     landed_state: Optional[int] = None
     landed_time: float = 0.0
@@ -433,7 +448,8 @@ def drain_mavlink(
             telemetry.mode = mavutil.mode_string_v10(msg)
             telemetry.armed = bool(msg.base_mode &
                 mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-            if telemetry.authority_started and (
+            expected_land=telemetry.landing_expected and telemetry.mode == "LAND"
+            if telemetry.authority_started and not expected_land and (
                     telemetry.mode != "GUIDED" or not telemetry.armed):
                 telemetry.authority_revoked = True
         elif kind == "EXTENDED_SYS_STATE":
@@ -566,6 +582,31 @@ def current_pose() -> Optional[
     )
 
 
+def refresh_manager_after_qr(master, timeout=3.0):
+    """Bounded read-owner handback. Old receipt timestamps are never refreshed.
+
+    QR runtime drained this same connection while the manager was paused. Hold
+    until genuinely new heartbeat, estimator and pose packets are received.
+    """
+    started=time.monotonic()
+    request_pose_telemetry(master)
+    while time.monotonic()-started<timeout:
+        drain_mavlink(master)
+        now=time.monotonic()
+        if telemetry.authority_revoked or telemetry.pose_fault:
+            return False
+        send_stop(master)
+        if (telemetry.mode=='GUIDED' and telemetry.armed
+                and telemetry.heartbeat_time>=started and telemetry.ekf_time>=started
+                and (telemetry.ekf_flags&55)==55
+                and now-telemetry.position_time<=LIDAR_POSE_MAX_AGE_S
+                and now-telemetry.relative_alt_time<=.5
+                and attitude_valid(current_attitude())):
+            return True
+        time.sleep(.02)
+    return False
+
+
 # ============================================================
 # ATTITUDE FOR NATIVE FSM
 # ============================================================
@@ -608,6 +649,7 @@ def current_attitude() -> Optional[
 # ============================================================
 
 active_commands: Optional[CommandService] = None
+manager_command_token = None
 mav_tx_lock = threading.RLock()
 
 
@@ -677,7 +719,7 @@ def send_camera_velocity(
     """
 
     if active_commands is not None:
-        active_commands.publish(vx, vy, vz, source_timestamp=source_timestamp)
+        active_commands.publish(vx, vy, vz, source_timestamp=source_timestamp, token=manager_command_token)
         return
 
     type_mask = int(
@@ -777,7 +819,7 @@ def send_native_velocity(
     if active_commands is not None:
         active_commands.publish(command.vx_m_s, -command.vy_m_s,
                                 -command.vz_m_s, -command.yaw_rate_rad_s,
-                                source_timestamp=source_timestamp)
+                                source_timestamp=source_timestamp,token=manager_command_token)
         return
 
     type_mask = 1479
@@ -852,6 +894,55 @@ def request_land(
             0, 0, 0, 0, 0, 0, 0,
         )
     telemetry.last_land_request = time.monotonic()
+
+
+def set_forward_camera_active(node, active):
+    """Suspend acquisition/decoding between outbound exit and orange approach.
+
+    Generation checking discards a callback already decoding when suspended.
+    The source-clock gate remains intact across this intentional acquisition gap.
+    """
+    global forward_camera_active, forward_camera_generation
+    global latest_forward_frame,camera_receipt_time,camera_source_stamp_ns
+    with sensor_lock:
+        if forward_camera_active==active: return
+        forward_camera_active=False
+        forward_camera_generation+=1
+        latest_forward_frame=None; camera_receipt_time=0.; camera_source_stamp_ns=None
+    if active:
+        if not node.subscribe(Image,'/iris/camera_forward/image_raw',on_forward_image):
+            raise RuntimeError('Return forward camera subscription failed')
+        with sensor_lock: forward_camera_active=True
+    else:
+        node.unsubscribe('/iris/camera_forward/image_raw')
+    print(f'[CAMERA] Forward acquisition {"resumed for orange approach" if active else "suspended after outbound exit"}')
+
+
+def return_sensor_snapshot():
+    """Immutable/reference snapshot; acquisition already owns the camera arrays."""
+    with sensor_lock:
+        return (latest_forward_frame,camera_sequence,camera_receipt_time,
+                camera_source_stamp_ns,latest_scan,scan_sequence,
+                camera_clock_gate.failure or lidar_clock_gate.failure)
+
+
+def landing_confirmed_feedback(feedback,now,started,profile):
+    """Fresh FC touchdown evidence AND the surveyed exterior landing region."""
+    required=(feedback.x_m,feedback.y_m,feedback.relative_alt_m,
+              feedback.vx_m_s,feedback.vy_m_s,feedback.vz_m_s)
+    if not all(v is not None and math.isfinite(v) for v in required): return False
+    delta=np.array([feedback.x_m,feedback.y_m])-profile.entrance
+    along=float(delta@profile.axis)
+    across=float(delta@np.array([-profile.axis[1],profile.axis[0]]))
+    return (0<=now-feedback.heartbeat_time<=2.5 and 0<=now-feedback.landed_time<=1.5
+        and 0<=now-feedback.relative_alt_time<=1. and 0<=now-feedback.position_time<=1.
+        and feedback.heartbeat_time>=started and feedback.landed_time>=started
+        and feedback.mode=='LAND' and not feedback.armed
+        and feedback.landed_state==mavutil.mavlink.MAV_LANDED_STATE_ON_GROUND
+        and abs(feedback.relative_alt_m)<.4
+        and max(abs(feedback.vx_m_s),abs(feedback.vy_m_s),abs(feedback.vz_m_s))<.15
+        and profile.far_mouth_distance+profile.landing_clearance-.3<=along<=profile.far_mouth_distance+profile.landing_clearance+.8
+        and abs(across)<=profile.entry_half_width)
 
 
 def confirm_terminal_land(master, timeout_s=3.0):
@@ -1062,7 +1153,7 @@ def create_corridor_runner(enter_distance, vehicle_width_m=0.65,
 # ============================================================
 
 def main() -> int:
-    global active_commands, forward_processing_width
+    global active_commands, forward_processing_width, manager_command_token
 
     parser = argparse.ArgumentParser()
 
@@ -1080,8 +1171,17 @@ def main() -> int:
     )
     parser.add_argument("--start-mission", action="store_true",
                         help="Explicitly authorize normal GUIDED arm and autonomous takeoff")
-    parser.add_argument("--takeoff-altitude", type=float, default=3.0,
+    parser.add_argument("--takeoff-altitude", type=float, default=5.0,
                         help="Gazebo profile HOME-relative takeoff height, metres")
+    parser.add_argument('--coverage-only', action='store_true',
+                        help='Explicit regression mode: skip initial and field QR tasks')
+    parser.add_argument('--qr-only', action='store_true',
+                        help='Regression endpoint: stop after matched target 5 m hold')
+    parser.add_argument('--test-return-only',action='store_true',help=argparse.SUPPRESS)
+    parser.add_argument('--test-field-qr-only',action='store_true',help=argparse.SUPPRESS)
+    parser.add_argument('--test-field-qr-approach',action='store_true',help=argparse.SUPPRESS)
+    parser.add_argument('--return-config',type=Path,
+                        default=MISSION_ROOT/'config/return_mission.json')
 
 
     # --------------------------------------------------------
@@ -1256,6 +1356,31 @@ def main() -> int:
     if not math.isfinite(args.coverage_max_wall_seconds) or args.coverage_max_wall_seconds <= 0:
         parser.error("--coverage-max-wall-seconds must be finite and positive")
     coverage_cfg = CoverageConfig.load(args.coverage_config)
+    return_profile=ReturnConfig.load(args.return_config)
+    if args.test_return_only and os.environ.get('MISSION_OWNED_RETURN_FIXTURE')!='1':
+        parser.error('Return-only initialization is restricted to the owned Gazebo harness')
+    if args.test_field_qr_only:
+        if (os.environ.get('MISSION_OWNED_FIELD_QR_FIXTURE')!='1' or
+                not args.qr_only or args.coverage_only or args.test_return_only or
+                abs(args.takeoff_altitude-coverage_cfg.altitude)>1e-6):
+            parser.error('Field QR initialization requires the owned fixture and QR-only endpoint')
+    if args.test_field_qr_approach and not args.test_field_qr_only:
+        parser.error('Textured approach initialization requires the owned field fixture')
+    if args.coverage_only and args.qr_only:
+        parser.error('Choose coverage-only or QR-only, not both')
+    return_enabled=not (args.coverage_only or args.qr_only)
+    if return_enabled:
+        stand_off=FieldFrame(coverage_cfg).point(return_profile.stand_off_point)
+        if not (coverage_cfg.n_min+coverage_cfg.clearance <= stand_off[0] <= coverage_cfg.n_max-coverage_cfg.clearance
+                and coverage_cfg.e_min+coverage_cfg.clearance <= stand_off[1] <= coverage_cfg.e_max-coverage_cfg.clearance):
+            parser.error('Return stand-off is outside the registered safe field')
+    if not args.coverage_only and not args.test_return_only and not args.test_field_qr_only:
+        if abs(args.takeoff_altitude-5.)>1e-6:
+            parser.error('QR mission requires the initial 5 m takeoff height')
+        decoder_self_check()  # Native/backend failure must be discovered before arming.
+    if args.test_field_qr_only:
+        decoder_self_check()
+    downward_sensors=DownwardSensors(coverage_cfg)
     if coverage_cfg.body_radius < args.vehicle_width / 2:
         parser.error("coverage body_radius is smaller than half corridor vehicle width")
 
@@ -1490,6 +1615,11 @@ def main() -> int:
     approach_last_confirmed = 0.0
     mission_arm_requested = False
     corridor_home_altitude = None
+    qr_reference = None
+    traversal_role='outbound'
+    return_egress_started=return_egress_boot=0.
+    landing_started=landing_boot=0.
+    landing_area_verified=False
 
 
     print()
@@ -1535,7 +1665,7 @@ def main() -> int:
                 continue
 
             if state not in (ExperimentState.STARTUP, ExperimentState.ABORT,
-                             ExperimentState.COMPLETE) and not coverage_started:
+                             ExperimentState.COMPLETE, ExperimentState.LANDING) and not coverage_started:
                 if (telemetry.authority_revoked or telemetry.mode != "GUIDED"
                         or not telemetry.armed
                         or telemetry.pose_fault is not None
@@ -1554,7 +1684,7 @@ def main() -> int:
                     state = ExperimentState.ABORT
                     continue
                 if state in (ExperimentState.LIDAR_CORRIDOR,
-                             ExperimentState.ADVANCE_TO_FIELD):
+                             ExperimentState.ADVANCE_TO_FIELD, ExperimentState.RETURN_EGRESS):
                     height_ok = (corridor_home_altitude is not None
                                  and telemetry.relative_alt_m is not None
                                  and math.isfinite(telemetry.relative_alt_m)
@@ -1608,7 +1738,13 @@ def main() -> int:
 
             if state == ExperimentState.STARTUP:
                 previous = startup.state
-                action = startup.step(startup_feedback(startup.state_since), now)
+                feedback=startup_feedback(startup.state_since)
+                if not args.coverage_only:
+                    down_frames, down_clock, down_error=downward_sensors.snapshot()
+                    # Both cameras must be acquiring before autonomous arming.
+                    feedback=replace(feedback,camera_time=min(feedback.camera_time,
+                        down_frames[-1][1] if down_frames and not down_error else 0.))
+                action = startup.step(feedback, now)
                 if startup.state != previous:
                     print(f"[STARTUP] {previous} -> {startup.state}")
                 if action is not None:
@@ -1625,9 +1761,62 @@ def main() -> int:
                         lambda vx, vy, vz, yaw, frame='body':
                             transmit_mission_velocity(master, vx, vy, vz, yaw, frame))
                     active_commands.start()
-                    banner_guard = BannerGuard(now, banner_guard_config)
+                    if args.test_return_only:
+                        if np.linalg.norm(np.array([telemetry.x_m,telemetry.y_m])-return_profile.stand_off_point)>.3:
+                            state=ExperimentState.ABORT
+                            print('[TEST] Return fixture not at registered stand-off')
+                        else:
+                            state=ExperimentState.COVERAGE
+                            print('[TEST] Fresh autonomous takeoff -> return-only fixture')
+                        continue
+                    if args.test_field_qr_only:
+                        fixture_start=([-18.2,-4.] if args.test_field_qr_approach else [-10.2,-3.8])
+                        if np.linalg.norm(np.array([telemetry.x_m,telemetry.y_m])-fixture_start)>.3:
+                            state=ExperimentState.ABORT
+                            print('[TEST] Field QR fixture not at registered start')
+                        else:
+                            qr_reference='REF-001'  # Fixture identity, NOT an initial QR validation.
+                            state=ExperimentState.COVERAGE
+                            print('[TEST] Fresh autonomous takeoff -> field QR fixture; injected reference')
+                        continue
+                    if not args.coverage_only:
+                        state=ExperimentState.INITIAL_QR
+                        initial_result={}
+                        initial_args=['--config',str(args.coverage_config),'--fly',
+                            '--log',str(args.coverage_log.with_name('initial_qr.jsonl')),
+                            '--max-wall-seconds','180','--entry-wall-seconds','30']
+                        if args.no_gui: initial_args.append('--no-gui')
+                        initial_cfg=replace(coverage_cfg,field_origin_n=0.,field_origin_e=0.,
+                                            field_yaw=0.,heading=telemetry.yaw_rad,geofence_latlon=None)
+                        try:
+                            initial_exit=run_coverage(initial_args,master=master,
+                                command_service=active_commands,command_token=active_commands.claim(),
+                                config_override=initial_cfg,sensors_override=downward_sensors,
+                                qr_mode='initial',result_out=initial_result,
+                                initial_origin=(round(telemetry.origin_lat_deg*1e7),
+                                    round(telemetry.origin_lon_deg*1e7),telemetry.origin_alt_mm)
+                                    if telemetry.origin_lat_deg is not None else None)
+                        except (Exception,SystemExit) as exc:
+                            print(f'[INITIAL QR] runtime failed: {exc}')
+                            initial_exit=1
+                        # Both successful and failed QR returns revoke the old
+                        # startup token before the manager may issue a safe stop.
+                        manager_command_token=active_commands.claim()
+                        if initial_exit or initial_result.get('state')!='REFERENCE_READY':
+                            state=ExperimentState.ABORT
+                            print('[INITIAL QR] no reference; corridor entry forbidden')
+                            continue
+                        qr_reference=initial_result['last_decision']['qr_reference']
+                        # Revoke the startup stage and refresh the manager's telemetry
+                        # before returning command ownership to camera/corridor logic.
+                        if not refresh_manager_after_qr(master):
+                            print('[INITIAL QR] telemetry handback failed; corridor entry forbidden')
+                            state=ExperimentState.ABORT
+                            continue
+                        print('[INITIAL QR] reference latched -> BANNER_SEARCH')
+                    banner_guard = BannerGuard(time.monotonic(), banner_guard_config)
                     state = ExperimentState.BANNER_SEARCH
-                    print("[STARTUP] settled takeoff -> BANNER_SEARCH")
+                    print("[STARTUP] settled takeoff/reference -> BANNER_SEARCH")
                 time.sleep(0.02)
                 continue
 
@@ -2483,6 +2672,14 @@ def main() -> int:
                         send_stop(
                             master
                         )
+                        if traversal_role=='return':
+                            return_egress_started=now
+                            return_egress_boot=telemetry.position_boot_s
+                            state=ExperimentState.RETURN_EGRESS
+                            print('[RETURN] Corridor exited; checking exterior landing clearance')
+                            continue
+                        set_forward_camera_active(node,False)
+                        preview.stop()
                         if coverage_cfg.geofence_latlon is not None:
                             try:
                                 coverage_cfg=coverage_cfg.register_origin(
@@ -2604,6 +2801,9 @@ def main() -> int:
                     send_camera_velocity(master, 0.0, 0.0, result.vz_down)
 
             elif state == ExperimentState.COVERAGE:
+                # Also applies to owned fixtures that skip outbound traversal.
+                set_forward_camera_active(node,False)
+                preview.stop()
                 # The leased sender remains the one navigation output owner.
                 # Claiming coverage authority revokes all corridor proposals.
                 send_stop(master)
@@ -2622,9 +2822,20 @@ def main() -> int:
                     ]
                     if args.no_gui:
                         coverage_args.append('--no-gui')
+                    coverage_result={}
+                    orange_approach=(ReturnApproach(coverage_cfg,return_profile,args,
+                        return_sensor_snapshot,preview,
+                        activate=lambda: set_forward_camera_active(node,True)) if return_enabled else None)
                     coverage_exit = run_coverage(coverage_args, master=master,
                         command_service=active_commands, command_token=coverage_token,
                         config_override=coverage_cfg,
+                        sensors_override=downward_sensors,
+                        qr_mode=('return_test' if args.test_return_only else
+                                 None if args.coverage_only else 'field'),
+                        reference=qr_reference,
+                        result_out=coverage_result,
+                        return_profile=return_profile if return_enabled else None,
+                        return_approach=orange_approach,
                         initial_origin=(round(telemetry.origin_lat_deg*1e7),
                                         round(telemetry.origin_lon_deg*1e7),
                                         telemetry.origin_alt_mm)
@@ -2635,9 +2846,88 @@ def main() -> int:
                     print(f"[COVERAGE] runtime failed: {exc}")
                     state = ExperimentState.ABORT
                 else:
-                    state = (ExperimentState.COMPLETE if coverage_exit == 0
-                             else ExperimentState.ABORT)
-                    print(f"[COVERAGE] {'COMPLETE' if coverage_exit == 0 else 'ABORT'}")
+                    coverage_token=coverage_result.get('command_token',coverage_token)
+                    if coverage_exit==0 and coverage_result.get('state')=='RETURN_ENTRY_READY':
+                        manager_command_token=active_commands.claim()
+                        if not refresh_manager_after_qr(master):
+                            state=ExperimentState.ABORT
+                        else:
+                            yaw_error=math.atan2(math.sin(telemetry.yaw_rad-return_profile.heading),
+                                                 math.cos(telemetry.yaw_rad-return_profile.heading))
+                            if (not return_profile.approach_contains(
+                                    [telemetry.x_m,telemetry.y_m],telemetry.relative_alt_m)
+                                    or abs(yaw_error)>math.radians(15)
+                                    or orange_approach.target_alt is None
+                                    or abs(telemetry.relative_alt_m-orange_approach.target_alt)>.15):
+                                state=ExperimentState.ABORT
+                                print('[RETURN] Fresh handoff pose/height not in staged envelope')
+                                continue
+                            corridor=create_corridor_runner(args.enter_distance,args.vehicle_width,
+                                args.passage_side_margin,args.max_path_cross_track,args.max_path_yaw_error)
+                            corridor_home_altitude=telemetry.relative_alt_m
+                            traversal_role='return'; previous_native_state=None
+                            last_scan_sequence=-1; preentry_snapshot_saved=True
+                            coverage_started=False
+                            state=ExperimentState.LIDAR_CORRIDOR
+                            print('[RETURN] Fresh read/command handoff -> native corridor FSM')
+                    else:
+                        state = (ExperimentState.COMPLETE if coverage_exit == 0 and not return_enabled
+                                 else ExperimentState.ABORT)
+                    print(f"[MISSION SEGMENT] {coverage_result.get('state','ABORT')}")
+
+            elif state == ExperimentState.RETURN_EGRESS:
+                axis=return_profile.axis
+                delta=np.array([telemetry.x_m,telemetry.y_m])-return_profile.entrance
+                along=float(delta@axis)
+                across=float(delta@np.array([-axis[1],axis[0]]))
+                elapsed=telemetry.position_boot_s-return_egress_boot
+                target=return_profile.far_mouth_distance+return_profile.landing_clearance
+                yaw_error=math.atan2(math.sin(telemetry.yaw_rad-return_profile.heading),
+                                     math.cos(telemetry.yaw_rad-return_profile.heading))
+                with sensor_lock: egress_scan=latest_scan
+                front=(sector_clearance(egress_scan,half_cone_deg=18.)
+                       if egress_scan is not None and egress_scan.age_s<=.30 else None)
+                if (elapsed<0 or elapsed>30 or now-return_egress_started>120
+                        or abs(across)>return_profile.entry_half_width
+                        or not return_profile.far_mouth_distance-1 <= along <= target+.8
+                        or abs(yaw_error)>math.radians(15) or front is None or front<.6):
+                    send_stop(master); state=ExperimentState.ABORT
+                    print('[RETURN] Egress geometry, clearance or progress invalid')
+                elif along<target:
+                    vx,vy=heading_velocity_in_body(.15,return_profile.heading,telemetry.yaw_rad)
+                    send_camera_velocity(master,vx,vy,0.)
+                elif max(abs(telemetry.vx_m_s),abs(telemetry.vy_m_s),abs(telemetry.vz_m_s))>.10:
+                    send_stop(master)
+                else:
+                    landing_area_verified=True
+                    telemetry.landing_expected=True
+                    landing_started=now; landing_boot=telemetry.position_boot_s
+                    request_land(master)
+                    if confirm_terminal_land(master):
+                        state=ExperimentState.LANDING
+                        print('[RETURN] Exterior landing region verified; FC LAND confirmed')
+                    else:
+                        state=ExperimentState.ABORT
+                        print('[RETURN] LAND mode was not confirmed')
+
+            elif state == ExperimentState.LANDING:
+                elapsed=telemetry.position_boot_s-landing_boot
+                fresh=(now-telemetry.heartbeat_time<=2.5 and now-telemetry.landed_time<=1.5
+                       and now-telemetry.relative_alt_time<=1. and now-telemetry.position_time<=1.)
+                landed=landing_confirmed_feedback(telemetry,now,landing_started,return_profile)
+                if landed:
+                    state=ExperimentState.COMPLETE
+                    print('[RETURN] COMPLETE: fresh on-ground and disarmed confirmation')
+                    args.coverage_log.with_suffix('.landing.json').write_text(
+                        json.dumps({'state':'COMPLETE','traversal_role':traversal_role,
+                            'n':telemetry.x_m,'e':telemetry.y_m,'home_alt':telemetry.relative_alt_m,
+                            'boot_s':telemetry.position_boot_s,'armed':False,
+                            'landed_state':telemetry.landed_state},indent=2)+'\n')
+                elif (not fresh or telemetry.authority_revoked or telemetry.mode!='LAND'
+                        or elapsed<0 or elapsed>return_profile.landing_seconds
+                        or now-landing_started>180):
+                    state=ExperimentState.ABORT
+                    print('[RETURN] Landing monitoring failed; touchdown unconfirmed')
 
 
             # =================================================
@@ -2762,6 +3052,7 @@ def main() -> int:
                 except Exception as exc:
                     print(f"[SAFETY] STOP dispatch failed: {exc}")
             if (state == ExperimentState.ABORT and mission_arm_requested
+                    and (traversal_role!='return' or landing_area_verified)
                     and telemetry.armed and telemetry.mode in ("GUIDED", "LAND")
                     and not (telemetry.authority_revoked and telemetry.mode != "LAND")):
                 try:
@@ -2769,6 +3060,8 @@ def main() -> int:
                     print(f"[SAFETY] LAND confirmation: {confirmed}")
                 except Exception as exc:
                     print(f"[SAFETY] LAND dispatch/confirmation failed: {exc}")
+            elif state==ExperimentState.ABORT and traversal_role=='return' and not landing_area_verified:
+                print('[SAFETY] Return aborted: stopped; unverified/roof-covered landing forbidden. FC/operator contingency required.')
         if coverage_started:
             print("[EXPERIMENT] coverage authority released; command sender stopped")
 

@@ -228,10 +228,17 @@ def preview_worker(frames,abort_requested):
         cv2.destroyAllWindows()
 
 
-def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
+def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None,qr_mode=None,reference=None,qr_limits=None,return_profile=None):
     import cv2
     from .engine import Engine
     engine=Engine(cfg)
+    from .qr import Inspection
+    inspection=Inspection(cfg,qr_limits,reference,initial=qr_mode=='initial') if qr_mode in ('initial','field') else None
+    if qr_mode=='return_test':
+        from .return_mission import ReturnNavigator
+        returning=ReturnNavigator(cfg,return_profile)
+    else: returning=None
+    last_job_pose_t=None
     last_seq=-1
     last_camera_seq=-1
     camera_t=-1.
@@ -242,10 +249,15 @@ def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
         while True:
             job=inputs.get()
             if job is None: return
-            seq,image,frame_pose,current,delay,raw_frame=job
+            seq,image,frame_pose,current,delay,raw_frame,qr_result=job[:7]
+            front=job[7] if len(job)>7 else None
             if delay: time.sleep(delay)
             processing_started=time.monotonic()
             try:
+                if last_job_pose_t is not None and current.t-last_job_pose_t>cfg.pose_gap*2:
+                    if inspection: inspection.interrupt()
+                    if returning: returning.interrupt()
+                last_job_pose_t=current.t
                 raw_hsv=None
                 if raw_frame is not None and raw_frame[3]!=last_camera_seq:
                     last_camera_seq=raw_frame[3]
@@ -254,7 +266,11 @@ def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
                         camera_t=raw_frame[0]
                     except UnusableImage:
                         pass
-                if frame_pose is not None and seq!=last_seq and (abs(frame_pose.alt-cfg.altitude)<=cfg.altitude_tolerance
+                descending=returning is not None or (inspection is not None and inspection.match is not None)
+                if qr_mode=='initial' and image is not None:
+                    view_image=image
+                    last_seq=seq
+                if qr_mode!='initial' and frame_pose is not None and seq!=last_seq and (descending or abs(frame_pose.alt-cfg.altitude)<=cfg.altitude_tolerance
                         and abs(frame_pose.roll)<=cfg.max_tilt and abs(frame_pose.pitch)<=cfg.max_tilt):
                     try:
                         engine.observe(image,frame_pose,
@@ -263,8 +279,32 @@ def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
                         view_image=image
                     except UnusableImage:
                         pass  # No observations/coverage credited; freshness expires.
-                decision=engine.step(current,camera_t)
+                transition=None
+                if returning is not None:
+                    external,transition=returning.step(current,engine.ground,front)
+                else:
+                    external=inspection.step(current,qr_result,engine.ground if qr_mode=='field' else None) if inspection else None
+                if qr_mode=='initial':
+                    decision=external
+                    decision.camera_t=camera_t
+                    decision.frame_t=frame_pose.t if frame_pose is not None else -1.
+                else:
+                    decision=engine.step(current,camera_t,external,descent_active=descending,transition=transition)
+                    if descending and decision.state=='ESCAPE': decision.vd=0.
+                    if inspection and decision.state=='COMPLETE':
+                        decision.state=inspection.search_outcome()
+                        decision.reason='Coverage exhausted without a confirmed matching QR'
+                if decision.state in ('HOLD','BRAKE','ESCAPE','ABORTED'):
+                    if inspection: inspection.interrupt()
+                    if returning: returning.interrupt()
+                if return_profile is not None and decision.state=='TARGET_HOLD_5M':
+                    from .return_mission import ReturnNavigator
+                    returning=ReturnNavigator(cfg,return_profile)
+                    decision.state='RETURN_START'; decision.reason='Five-second delivery hold completed'
                 payload=decision.as_dict()
+                if returning: payload['return_phase']=returning.state
+                if inspection: payload.update(inspection.metadata())
+                if inspection: payload['delivery_hold_since']=inspection.final_since
                 payload['events']=engine.residence.events[-10:]
                 payload['position']=[current.n,current.e]
                 payload['altitude']=current.alt
@@ -288,6 +328,9 @@ def worker(cfg,inputs,outputs,gui,artifact,preview_frames=None):
                 put_latest(outputs,payload)
                 if gui and preview_frames is not None and (seq % 5 == 0):
                     view=view_image.copy()
+                    if qr_result and qr_result.get('seq')==seq:
+                        for marker in qr_result.get('observations',[]):
+                            cv2.polylines(view,[np.asarray(marker['quad'],np.int32)],True,(255,255,0),2)
                     cv2.putText(view,decision.state,(12,25),cv2.FONT_HERSHEY_SIMPLEX,.7,(0,255,255),2)
                     if decision.entered is not None:
                         text=f'RED: {max(0,10-(current.t-decision.entered)):.1f}s remaining'
@@ -373,7 +416,8 @@ def hold(master,position,yaw):
 
 
 def main(argv=None, master=None, command_service=None, command_token=None,
-         config_override=None, initial_origin=None, sensors_override=None):
+         config_override=None, initial_origin=None, sensors_override=None,
+         qr_mode=None, reference=None, result_out=None,return_profile=None,return_approach=None):
     from pymavlink import mavutil
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config',type=Path,default=Path(__file__).parents[1]/'config/coverage.json')
@@ -386,7 +430,21 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                         help='Abort if synchronized airborne entry is not achieved')
     parser.add_argument('--log',type=Path,default=Path(__file__).parents[1]/'artifacts/runtime.jsonl')
     parser.add_argument('--faults',type=Path,help='Owned SITL harness only; never use for flight')
+    parser.add_argument('--qr-config',type=Path,default=Path(__file__).parents[1]/'config/qr_mission.json')
+    parser.add_argument('--qr-reference',help='ISOLATED TEST ONLY: explicit injected reference')
     args=parser.parse_args(argv); cfg=config_override or Config.load(args.config)
+    from .qr import QRConfig, QRService, decoder_self_check
+    qr_limits=QRConfig.load(args.qr_config)
+    if return_profile is not None:
+        if qr_mode not in ('field','return_test') or return_approach is None:
+            raise ValueError('Return requires field QR mode and manager approach hook')
+        qr_limits=replace(qr_limits,final_dwell=return_profile.delivery_dwell)
+    if args.qr_reference is not None:
+        if master is not None: raise ValueError('Integrated mission may not inject a QR reference')
+        qr_mode='field'; reference=args.qr_reference
+    if qr_mode not in (None,'initial','field','return_test'): raise ValueError('Unknown QR phase')
+    if qr_mode=='field' and not reference: raise ValueError('Field QR mission requires startup reference')
+    if qr_mode in ('initial','field'): decoder_self_check()
     if cfg.geofence_latlon is not None and config_override is None:
         raise ValueError('GPS geofence requires registered FC origin at runtime entry')
     if cfg.geofence_latlon is not None and initial_origin is None:
@@ -399,7 +457,9 @@ def main(argv=None, master=None, command_service=None, command_token=None,
         from .faults import Faults
         faults=Faults(args.faults)
     args.log.parent.mkdir(parents=True,exist_ok=True)
-    manifest={'config':cfg.as_dict(),'fly':args.fly,'gui':not args.no_gui,'faults':faults.events if faults else [],
+    manifest={'config':cfg.as_dict(),'fly':args.fly,'gui':not args.no_gui,'qr_mode':qr_mode,
+        'return_config':vars(return_profile) if return_profile else None,
+        'qr_config':vars(qr_limits),'faults':faults.events if faults else [],
         'source_sha256':{p.name:hashlib.sha256(p.read_bytes()).hexdigest()
                          for p in Path(__file__).parent.glob('*.py')}}
     args.log.with_suffix('.manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
@@ -424,8 +484,10 @@ def main(argv=None, master=None, command_service=None, command_token=None,
     if preview_proc is not None: preview_proc.start()
     args.log.parent.mkdir(parents=True,exist_ok=True)
     proc=ctx.Process(target=worker,args=(cfg,jobs,results,not args.no_gui,
-                     args.log.with_suffix('.map.npz'),preview_frames),daemon=True)
+                     args.log.with_suffix('.map.npz'),preview_frames,qr_mode,reference,qr_limits,return_profile),daemon=True)
     proc.start()
+    qr_service=QRService(cfg,qr_limits) if qr_mode in ('initial','field') else None
+    qr_result=None; qr_matched_generation=None; qr_closed=False
     position=attitude=altitude=None
     ekf_flags=0; ekf_wall=0; origin=initial_origin
     heartbeat_wall=time.monotonic(); pos_wall=att_wall=alt_wall=0
@@ -519,15 +581,31 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                 image,frame_pose=matched_frame(frames,history,clock[0],cfg,frame_matches) if healthy else (None,None)
                 if frame_pose and 'pose_noise' in injected: frame_pose=noise(frame_pose)
                 if frame_pose: frame_pose=field_frame.pose(frame_pose)
-                airborne=bool(pose and abs(pose.alt-cfg.altitude)<=cfg.altitude_tolerance)
+                entry_altitude=qr_limits.final_altitude if qr_mode in ('initial','return_test') else cfg.altitude
+                airborne=bool(pose and abs(pose.alt-entry_altitude)<=cfg.altitude_tolerance)
+                if qr_service and not qr_closed and (latest_result or {}).get('qr_match'):
+                    qr_service.close(); qr_closed=True
+                if qr_service and not (latest_result or {}).get('qr_match'):
+                    observed=qr_service.poll()
+                    if observed:
+                        qr_result=observed
+                        logs.submit('qr',observed)
+                    if healthy and frame_pose and image and not (latest_result or {}).get('qr_match'):
+                        qr_service.submit(image,frame_pose,latest_result or {})
                 due=bool(clock and job_due(now,last_job,clock[0],last_job_source,cfg))
+                front=None
+                if (return_approach is not None and pose_healthy and
+                        (latest_result or {}).get('return_phase')=='RETURN_FRONT'):
+                    if (latest_result or {}).get('state') in ('HOLD','BRAKE','ESCAPE'):
+                        return_approach.interrupt()
+                    front=return_approach(pose,now,clock[0])
                 if healthy and frame_pose and (active or airborne) and due:
-                    put_latest(jobs,(image[3],image[2],frame_pose,pose,injected.get('worker_delay',0),raw_frame))
+                    put_latest(jobs,(image[3],image[2],frame_pose,pose,injected.get('worker_delay',0),raw_frame,qr_result,front))
                     last_job=now; last_job_source=clock[0]
                 elif active and pose_healthy and due:
                     # Keep residence/recovery alive with fresh localization and the
                     # frozen known map. No image means no new coverage evidence.
-                    put_latest(jobs,(-1,None,None,pose,injected.get('worker_delay',0),raw_frame))
+                    put_latest(jobs,(-1,None,None,pose,injected.get('worker_delay',0),raw_frame,qr_result,front))
                     last_job=now; last_job_source=clock[0]
                 try:
                     while True:
@@ -549,7 +627,7 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                         state='ABORTED'; reason='Red-zone ten-second limit exceeded'; break
                 if latest_result and latest_result.get('state')=='ABORTED':
                     state='ABORTED'; reason=latest_result['reason']; break
-                if not active and healthy and frame_pose and armed and guided and abs(pose.alt-cfg.altitude)<=cfg.altitude_tolerance and abs(pose.vd)<.15:
+                if not active and healthy and frame_pose and armed and guided and airborne and abs(pose.vd)<.15:
                     active=True; entry_t=clock[0]; print('[ENTRY] Settled airborne state accepted',flush=True)
                 decision_recent=bool(active and pose_healthy and latest_result and
                     now-result_wall<=cfg.worker_wall_age)
@@ -569,9 +647,14 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                 command=[0.,0.,0.]
                 if valid:
                     state=latest_result['state']; reason=latest_result['reason']; missing_since=None
-                    if state=='COMPLETE':
+                    if state in ('COMPLETE','REFERENCE_READY','TARGET_HOLD_5M','RETURN_ENTRY_READY'):
                         hold_pos=position; exit_code=0
-                    if state in ('COMPLETE','BLOCKED','ABORTED'): break
+                    if state in ('COMPLETE','BLOCKED','ABORTED','REFERENCE_READY','TARGET_HOLD_5M','RETURN_ENTRY_READY',
+                                 'TARGET_NOT_FOUND','TARGET_UNRESOLVED'): break
+                    if latest_result.get('qr_match') is not None and qr_matched_generation is None:
+                        # Atomic authority transfer revokes any queued sweep command.
+                        qr_matched_generation=latest_result['qr_generation']
+                        if command_service is not None: command_token=command_service.claim()
                     command=[latest_result['vn'],latest_result['ve'],latest_result['vd']]
                 else:
                     if active:
@@ -585,10 +668,18 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                     # position/velocity switching destabilized the Iris test model.
                     local_command=(*field_frame.local_vector(command[:2]),command[2])
                     if command_service is not None:
-                        command_service.publish(*local_command,cfg.heading+cfg.field_yaw,
-                                                token=command_token, frame='local')
+                        if valid:
+                            command_service.publish(*local_command,(latest_result or {}).get('yaw',cfg.heading)+cfg.field_yaw,
+                                                    token=command_token, frame='local')
+                        else:
+                            # Invalid evidence cannot authorize even a yaw turn.
+                            command_service.publish(0.,0.,0.,0.,token=command_token,frame='body')
                     else:
-                        velocity(master,*local_command,cfg.heading+cfg.field_yaw)
+                        if valid:
+                            velocity(master,*local_command,(latest_result or {}).get('yaw',cfg.heading)+cfg.field_yaw)
+                        else:
+                            master.mav.set_position_target_local_ned_send(0,master.target_system,
+                                master.target_component,8,1479,0,0,0,0,0,0,0,0,0,0,0)
                     last_command=now
                 if active and now-last_supervision>=.05:
                     logs.submit('supervision',{'t':clock[0],'wall':now,'state':state,'valid':valid,'command':command,
@@ -623,8 +714,11 @@ def main(argv=None, master=None, command_service=None, command_token=None,
                                  and position and now-pos_wall<cfg.sensor_wall_age)
             if args.fly and authority_ok:
                 if command_service is not None:
-                    command_service.publish(0.,0.,0.,cfg.heading+cfg.field_yaw,
-                                            token=command_token,frame='local')
+                    if localization_ok and pose_healthy:
+                        command_service.publish(0.,0.,0.,pose.yaw+cfg.field_yaw,
+                                                token=command_token,frame='local')
+                    else:
+                        command_service.publish(0.,0.,0.,0.,token=command_token,frame='body')
                 elif localization_ok:
                     hold_pos=hold_pos or position
                     for _ in range(10):
@@ -637,6 +731,7 @@ def main(argv=None, master=None, command_service=None, command_token=None,
             state='ABORTED'; exit_code=1
             reason=f'Terminal command failed: {exc}'
             print(f'[FAULT] {reason}',flush=True)
+        if qr_service is not None and not qr_closed: qr_service.close()
         put_latest(jobs,None); proc.join(timeout=2)
         if proc.is_alive(): proc.terminate(); proc.join(timeout=2)
         if preview_proc is not None:
@@ -650,10 +745,12 @@ def main(argv=None, master=None, command_service=None, command_token=None,
         if logs.failure is not None or logs.dropped:
             print(f'[DIAGNOSTICS] coverage JSONL loss: dropped={logs.dropped} error={logs.failure}',flush=True)
         print(f'[{state}] {reason}',flush=True)
-        args.log.with_suffix('.result.json').write_text(json.dumps({'state':state,'reason':reason,
-            'exit_code':exit_code,'last_decision':latest_result,
+        completed={'state':state,'reason':reason,
+            'exit_code':exit_code,'last_decision':latest_result,'command_token':command_token,
             'jsonl_dropped':logs.dropped,'jsonl_error':str(logs.failure) if logs.failure else None,
-            'jsonl_drained':logs.drained},indent=2,allow_nan=False)+'\n')
+            'jsonl_drained':logs.drained,'qr_worker':qr_service.metrics if qr_service else None}
+        if result_out is not None: result_out.update(completed)
+        args.log.with_suffix('.result.json').write_text(json.dumps(completed,indent=2,allow_nan=False)+'\n')
     return exit_code
 
 

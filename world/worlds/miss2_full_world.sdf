@@ -43,6 +43,9 @@
 
     <!-- Load Stock ArduPilot Iris Drone -->
     <include>
+      <uri>model://qr_markers</uri>
+    </include>
+    <include>
       <uri>model://iris_miss2_full</uri>
       <pose>0 -36.50 0.35 0 0 1.5708</pose>
     </include>
@@ -87,6 +90,30 @@
 
       </link>
 
+    </model>
+
+    <!-- Orange corridor entrance from the payload/coverage field side.
+         Match the green banner's dimensions and 10 ft lower-edge height.
+         The right-hand corridor centre is world X=4.101 m; its field end
+         is world Y=-20.109 m. Like the green banner, place the panel just
+         inside the opening and leave it visual-only. -->
+    <model name="orange_banner">
+      <static>true</static>
+      <pose>4.1 -20 3.548 0 0 0</pose>
+      <link name="banner_link">
+        <visual name="banner_visual">
+          <geometry>
+            <box>
+              <size>3.5 0.08 1.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>1 0.5 0 1</ambient>
+            <diffuse>1 0.5 0 1</diffuse>
+            <specular>0 0 0 1</specular>
+          </material>
+        </visual>
+      </link>
     </model>
 
     <!-- Coverage field is the flat Final grd mesh: local N=[-20,20],

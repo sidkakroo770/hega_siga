@@ -1,5 +1,13 @@
 # Pi 5 + IMX296 integration handoff
 
+## Return extension checkpoint — 2026-10-08
+
+The full mission now includes a return implementation; see
+`../../RETURN_MISSION_IMPLEMENTATION_STATUS.md` for current test evidence.
+It reuses the map worker, bounded sensor history and leased sender, and releases
+QR decoding after match. Entrance, exterior landing and colour profiles remain
+Gazebo/site assumptions. This does not change the hardware-flight-ready status.
+
 Status: camera acquisition and the dual-camera ground benchmark are implemented, but the full mission is **not yet hardware-flight ready**. The existing full-mission runner still subscribes to Gazebo camera and LiDAR topics. No physical Pi, IMX296 pair, LiDAR or flight controller was available in this development environment, so these numbers have not been measured on the target.
 
 ## Implemented now
@@ -39,5 +47,21 @@ Repeat once with `--gui` to measure the diagnostic-display overhead separately. 
 
 ## Next integration boundary
 
-The hardware runner still needs a physical LiDAR adapter and a sensor-backend selection for the full-mission manager. `PiCoverageSensors` is an injection seam, not evidence that the entire mission can presently run on the Pi. Once the LiDAR and FC interfaces are known, connect both physical camera streams and LiDAR through that backend, keep one mission command authority, and re-run mission/fault tests with real timing. Do not use the Gazebo-only runner as a flight program.
+### QR workload added — 2026-10-08
 
+The same isolated QR perception worker can now be included in the ground-only
+dual-camera benchmark. Install `requirements-qr.txt` and distribution
+`libzbar0`, then add `--qr` to the benchmark command. Use
+`--qr --qr-stationary` with a visible test print to include selected-marker
+decoding; this is explicitly a synthetic-pose, stationary ground workload,
+not permission to decode in translating flight. Results include admitted QR
+jobs, decoder jobs, restarts, processing and result-latency peaks. Discovery
+is provisionally 5 Hz; decoding is capped at 2 Hz. The worker has a separate
+bounded cold-start readiness window and does not queue old frames during it.
+
+QR identity, centering, timing and descent integration are documented in the
+repository-root `QR_MISSION_IMPLEMENTATION_STATUS.md`. Actual Pi performance,
+10 m optical readability, final print/lens calibration and physical sensor
+backend integration remain unmeasured. No AI model was added.
+
+The hardware runner still needs a physical LiDAR adapter and a sensor-backend selection for the full-mission manager. `PiCoverageSensors` is an injection seam, not evidence that the entire mission can presently run on the Pi. Once the LiDAR and FC interfaces are known, connect both physical camera streams and LiDAR through that backend, keep one mission command authority, and re-run mission/fault tests with real timing. Do not use the Gazebo-only runner as a flight program.

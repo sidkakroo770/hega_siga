@@ -9,7 +9,7 @@
 > The corrected stationary comparison, requiring no SITL or flight commands:
 >
 > ```bash
-> cd ~/sae_mission2/world/experiments/full_world_lidar_ab
+> cd ~/[competition]_mission2/world/experiments/full_world_lidar_ab
 > source ./env.sh
 > python3 diagnose_winding.py original --no-joint
 > python3 diagnose_winding.py inward --no-joint
@@ -38,17 +38,17 @@ this measurement independent of SITL's shared physics port and of camera state.
 Run these sequentially after closing all other Gazebo simulations:
 
 ```bash
-bash ~/sae_mission2/world/experiments/full_world_lidar_ab/probe.sh top
-bash ~/sae_mission2/world/experiments/full_world_lidar_ab/probe.sh bottom
+bash ~/[competition]_mission2/world/experiments/full_world_lidar_ab/probe.sh top
+bash ~/[competition]_mission2/world/experiments/full_world_lidar_ab/probe.sh bottom
 ```
 
 Each command exits after capturing one scan. Compare:
 
 ```bash
 jq '{confidence, strict_valid, width, sectors, left, right}' \
-  ~/sae_mission2/world/experiments/full_world_lidar_ab/artifacts/top/live_geometry.json
+  ~/[competition]_mission2/world/experiments/full_world_lidar_ab/artifacts/top/live_geometry.json
 jq '{confidence, strict_valid, width, sectors, left, right}' \
-  ~/sae_mission2/world/experiments/full_world_lidar_ab/artifacts/bottom/live_geometry.json
+  ~/[competition]_mission2/world/experiments/full_world_lidar_ab/artifacts/bottom/live_geometry.json
 ```
 
 Interpretation:
@@ -60,3 +60,4 @@ Interpretation:
 - Both valid: the failure depends on the actual camera-to-LiDAR handoff pose,
   altitude, or moving vehicle state. Capture that exact state next; do not
   repeat the whole mission blindly.
+

@@ -56,8 +56,8 @@ export GZ_IP=127.0.0.1
 export GZ_PARTITION=miss2_integrated
 export GZ_DISCOVERY_MULTICAST_IP=239.255.0.7
 export GZ_SIM_SYSTEM_PLUGIN_PATH=/home/sid/ardupilot_gazebo/build
-export GZ_SIM_RESOURCE_PATH=/home/sid/sae_mission2/world/models/models:/home/sid/ardupilot_gazebo/models
-gz sim -r -v2 /home/sid/sae_mission2/world/worlds/miss2_full_world.sdf
+export GZ_SIM_RESOURCE_PATH=/home/sid/[competition]_mission2/world/models/models:/home/sid/ardupilot_gazebo/models
+gz sim -r -v2 /home/sid/[competition]_mission2/world/worlds/miss2_full_world.sdf
 ```
 
 Second terminal:
@@ -66,7 +66,7 @@ Second terminal:
 cd /home/sid/ardupilot/ArduCopter
 ../Tools/autotest/sim_vehicle.py -v ArduCopter -f gazebo-iris \
   --model JSON --no-mavproxy \
-  --use-dir /home/sid/sae_mission2/world/integration/artifacts/full_sitl_smoke
+  --use-dir /home/sid/[competition]_mission2/world/integration/artifacts/full_sitl_smoke
 ```
 
 Third terminal:
@@ -92,8 +92,8 @@ export GZ_DISCOVERY_MULTICAST_IP=239.255.0.7
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
-export PYTHONPATH=/home/sid/sae_mission2:/home/sid/sae_mission2/approach:/home/sid/sae_mission2/corridor:/usr/lib/python3/dist-packages
-python3 -u /home/sid/sae_mission2/world/integration/experimental_corridor_manager.py \
+export PYTHONPATH=/home/sid/[competition]_mission2:/home/sid/[competition]_mission2/approach:/home/sid/[competition]_mission2/corridor:/usr/lib/python3/dist-packages
+python3 -u /home/sid/[competition]_mission2/world/integration/experimental_corridor_manager.py \
   --start-mission --takeoff-altitude 3 \
   --mavlink udpin:0.0.0.0:14552 --banner-loss-frames 5 \
   --coverage-max-wall-seconds 7200
@@ -104,27 +104,27 @@ result are written under `world/integration/artifacts/coverage_runtime.*`.
 The manager exits nonzero on abort.
 
 For an independent pose trace, start this **before the manager** with the
-same Gazebo environment and `PYTHONPATH=/home/sid/sae_mission2`:
+same Gazebo environment and `PYTHONPATH=/home/sid/[competition]_mission2`:
 
 ```bash
 python3 -m coverage_mission.truth_monitor \
-  --config /home/sid/sae_mission2/config/full_mission_coverage.json \
+  --config /home/sid/[competition]_mission2/config/full_mission_coverage.json \
   --zone -9 -6 -4 -2 --zone -2.25 7.75 -5.11 2.32 \
   --zone 8 11 6 8 \
   --model-name iris_miss2_full \
   --pose-topic /world/miss2_world/pose/info \
   --ground-z 0.0731022 \
-  --output /home/sid/sae_mission2/world/integration/artifacts/full_truth.jsonl \
+  --output /home/sid/[competition]_mission2/world/integration/artifacts/full_truth.jsonl \
   --seconds 7400
 ```
 
 After a completed trace, independent evaluation is:
 
 ```bash
-PYTHONPATH=/home/sid/sae_mission2 python3 -m coverage_mission.evaluate_run \
-  --mission /home/sid/sae_mission2/world/integration/artifacts/coverage_runtime.jsonl \
-  --truth /home/sid/sae_mission2/world/integration/artifacts/full_truth.jsonl \
-  --output /home/sid/sae_mission2/world/integration/artifacts/full_evaluation.json
+PYTHONPATH=/home/sid/[competition]_mission2 python3 -m coverage_mission.evaluate_run \
+  --mission /home/sid/[competition]_mission2/world/integration/artifacts/coverage_runtime.jsonl \
+  --truth /home/sid/[competition]_mission2/world/integration/artifacts/full_truth.jsonl \
+  --output /home/sid/[competition]_mission2/world/integration/artifacts/full_evaluation.json
 ```
 
 This is still a Gazebo adapter: it uses Gazebo image/clock topics and a
@@ -175,7 +175,7 @@ monitor before treating the updated mission as Gazebo validated.
   *not* Raspberry Pi 5 or worst-case hard-deadline measurements.
 
 Validation in this workspace: 76 current offline/synthetic/integration tests
-passed, one inherited test in `/home/sid/sae_mission2_coverage/tests` was
+passed, one inherited test in `/home/sid/[competition]_mission2_coverage/tests` was
 deliberately deselected because it asserts the superseded two-frame confirmation
 rule. The new five-frame rule has a local regression test. Gazebo campaign could
 not start due sandbox networking, not because of a demonstrated flight failure.
@@ -213,7 +213,7 @@ Gazebo campaign completed and independently passed: zero red incursions, zero
 fence violations, zero permissible coverage gaps, maximum projected-corner
 error 0.103 m, maximum straight-leg cross-track 0.083 m, maximum truth sample
 gap 0.035 s. Evidence:
-`/tmp/sae-coverage-oct6-final-check2/evaluation.json`.
+`/tmp/[competition]-coverage-oct6-final-check2/evaluation.json`.
 
 The earlier original 40 × 30 m full-mission re-run reached coverage and
 independently sampled zero red/fence violations, but its `/tmp` evidence and
@@ -356,12 +356,12 @@ offline tests passing**; full-world Gazebo remains **not yet proven COMPLETE**.
 Use the quick regression loop before any further long flight:
 
 ```bash
-cd /home/sid/sae_mission2
-PYTHONPATH=/home/sid/sae_mission2 OPENBLAS_NUM_THREADS=1 \
+cd /home/sid/[competition]_mission2
+PYTHONPATH=/home/sid/[competition]_mission2 OPENBLAS_NUM_THREADS=1 \
   python3 -m coverage_mission.replay_saved_map \
   --config config/full_mission_coverage.json \
   --artifact-dir world/integration/artifacts/full_neutral_20261007
-PYTHONPATH=/home/sid/sae_mission2:/home/sid/sae_mission2/approach:/home/sid/sae_mission2/corridor:/home/sid/sae_mission2/world/integration:/usr/lib/python3/dist-packages \
+PYTHONPATH=/home/sid/[competition]_mission2:/home/sid/[competition]_mission2/approach:/home/sid/[competition]_mission2/corridor:/home/sid/[competition]_mission2/world/integration:/usr/lib/python3/dist-packages \
   OPENBLAS_NUM_THREADS=1 python3 -m pytest -q coverage_mission \
   world/integration/test_camera_pose_integrity.py \
   world/integration/test_corridor_altitude.py \
@@ -453,3 +453,4 @@ silently changed to manufacture a strict pass. Do not describe the independent
 evaluator's two failed booleans as passing, and do not treat this as Raspberry
 Pi/real-camera/real-flight certification. No second long coverage flight was
 launched after this completion.
+

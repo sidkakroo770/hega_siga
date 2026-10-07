@@ -1,4 +1,4 @@
-# SAE Mission 2 — corridor integration and isolated corridor test handoff
+# [competition] Mission 2 — corridor integration and isolated corridor test handoff
 
 ## Latest implementation and Gazebo checkpoint — 2026-10-05
 
@@ -56,7 +56,7 @@ health is now a startup prerequisite.
 **Verification:** 74 targeted offline tests pass (native validity, hardware
 health, startup, positive wall evidence, command lease, exit and altitude,
 coverage boundary). Live nominal and fault logs are under
-`/tmp/sae-autostart-gz.Xmsd78/` while that temporary directory exists.
+`/tmp/[competition]-autostart-gz.Xmsd78/` while that temporary directory exists.
 The user's pre-existing ArduCopter process was left untouched; test
 Gazebo, SITL and MAVProxy processes were stopped.
 
@@ -117,9 +117,9 @@ assembly, banner bounds/freeze, exit-clock, altitude and coverage-boundary
 regressions. Tests make no real command transmissions.
 
 ```bash
-cd /home/sid/sae_mission2
+cd /home/sid/[competition]_mission2
 PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH=/home/sid/sae_mission2/corridor:/home/sid/sae_mission2/world/integration \
+PYTHONPATH=/home/sid/[competition]_mission2/corridor:/home/sid/[competition]_mission2/world/integration \
 python3 -m pytest -q -p no:cacheprovider \
   corridor/native/test_lidar_assembly.py \
   corridor/native/test_hardware_health.py \
@@ -383,20 +383,20 @@ handoff was created.
 
 ## Save locations and directory instructions
 
-- Canonical repository-root handoff: `/home/sid/sae_mission2/world/HANDOFF.md`.
+- Canonical repository-root handoff: `/home/sid/[competition]_mission2/world/HANDOFF.md`.
 - User-requested Desktop copy: `/home/sid/Desktop/HANDOFF.md`.
-- Workspace-level convenience copy: `/home/sid/sae_mission2/HANDOFF.md`.
-- The workspace `/home/sid/sae_mission2` combines THREE separate repositories;
+- Workspace-level convenience copy: `/home/sid/[competition]_mission2/HANDOFF.md`.
+- The workspace `/home/sid/[competition]_mission2` combines THREE separate repositories;
   do not assume one Git repository contains all the code.
-- Primary repository for the active experiment: `/home/sid/sae_mission2/world`.
+- Primary repository for the active experiment: `/home/sid/[competition]_mission2/world`.
 - Current experiment directory:
-  `/home/sid/sae_mission2/world/experiments/corridor_only`.
-- Native controller repository: `/home/sid/sae_mission2/corridor`.
-- Camera repository: `/home/sid/sae_mission2/approach`.
+  `/home/sid/[competition]_mission2/world/experiments/corridor_only`.
+- Native controller repository: `/home/sid/[competition]_mission2/corridor`.
+- Camera repository: `/home/sid/[competition]_mission2/approach`.
 - ArduPilot source: `/home/sid/ardupilot`.
 - Gazebo ArduPilot plugin and stock vehicle models: `/home/sid/ardupilot_gazebo`.
 - Original imported conversation summary, if needed:
-  `/home/sid/Downloads/SAE_Mission2_Codex_Handoff.txt`. It is historical and
+  `/home/sid/Downloads/[competition]_Mission2_Codex_Handoff.txt`. It is historical and
   superseded by this document and current code.
 
 Use absolute paths or `cd` explicitly. Shell scripts below source their own
@@ -406,7 +406,7 @@ canonical handoff and recopy it to Desktop/workspace if those copies are used.
 
 ## Overall objective and immediate task
 
-Overall objective: integrate SAE AeroTHON autonomous drone Mission 2 in Gazebo
+Overall objective: integrate [competition] [competition] autonomous drone Mission 2 in Gazebo
 Harmonic and ArduPilot SITL. The mission uses camera/banner approach followed
 by Siddharth's native non-ROS LiDAR corridor FSM, including entry, cruise,
 obstacle decisions/avoidance and exit.
@@ -477,7 +477,7 @@ them. Inspect their contents directly.
 
 ### World repository
 
-Directory: `/home/sid/sae_mission2/world`
+Directory: `/home/sid/[competition]_mission2/world`
 
 - Branch: `main`.
 - HEAD: `79fd525 Update README.md`.
@@ -504,7 +504,7 @@ verified unchanged when edited. `HANDOFF.md` will additionally be untracked.
 
 ### Native corridor repository
 
-Directory: `/home/sid/sae_mission2/corridor`
+Directory: `/home/sid/[competition]_mission2/corridor`
 
 - Branch: **`native-non-ros`**. Preserve it.
 - HEAD: `b17b54b Add missing native abort and MAVLink runtime modules`.
@@ -517,7 +517,7 @@ Directory: `/home/sid/sae_mission2/corridor`
 
 ### Approach repository
 
-Directory: `/home/sid/sae_mission2/approach`
+Directory: `/home/sid/[competition]_mission2/approach`
 
 - Branch: `main`.
 - HEAD: `d06f7f4 Delete nano`.
@@ -527,7 +527,7 @@ Directory: `/home/sid/sae_mission2/approach`
 - Modified: `autonomy/perception/hybrid_banner_detector.py` (this session).
 - Also modified: `autonomy/behaviors/mission_runner.py`. This edit was not made
   by this session; preserve it. Inspected diff changes connection 14550 ->
-  14552 and QR capture path to `~/sae_mission2/approach/qr_captures`.
+  14552 and QR capture path to `~/[competition]_mission2/approach/qr_captures`.
 - Untracked Python caches exist under `autonomy/` and `autonomy/perception/`.
 
 No AGENTS.md or existing HANDOFF.md was found by the workspace search used for
@@ -556,8 +556,8 @@ sudo ip route replace 239.255.0.7/32 dev lo src 127.0.0.1
 - Both pipelines use `GZ_IP=127.0.0.1` and
   `GZ_DISCOVERY_MULTICAST_IP=239.255.0.7`.
 - Full mission partition: `miss2_local`.
-- Corridor-only partition: `sae_corridor_only`.
-- Headless validation partition: `sae_corridor_validation`.
+- Corridor-only partition: `[competition]_corridor_only`.
+- Headless validation partition: `[competition]_corridor_validation`.
 - Gazebo plugin/SITL physics port: 9002; SITL TCP: 5760; MAVProxy outputs:
   UDP 14550 and 14552. Runner listens on `udpin:0.0.0.0:14552`.
 - A distinct Gazebo partition does NOT isolate those MAVLink/physics ports.
@@ -580,7 +580,7 @@ validation model WITHOUT the ArduPilot plugin, its own partition, a 35-second
 timeout, and an EXIT trap to stop its own process. It completed successfully.
 
 After a model/session interruption, the old exec session IDs were invalid and
-the old `/tmp/sae_corridor_validation.log` had disappeared. Do not attempt to
+the old `/tmp/[competition]_corridor_validation.log` had disappeared. Do not attempt to
 resume old session IDs. The test was rerun with persistent artifact paths.
 The last host process check at completion found no `gz sim`, `gz-sim`,
 ArduCopter, MAVProxy or sim_vehicle processes. This is a historical check;
@@ -627,7 +627,7 @@ precedence over velocity commands.
 
 ### Native corridor FSM
 
-Important files under `/home/sid/sae_mission2/corridor/native/`:
+Important files under `/home/sid/[competition]_mission2/corridor/native/`:
 
 - `mission_runner.py`: coordinator, `MissionRunnerConfig`, `VehiclePose`,
   `NativeMissionRunner`; owns pre_entry/cruise/obstacle/exit/reassess/abort.
@@ -662,7 +662,7 @@ does. Native geometry confidence is not a sensor connection status.
 ## Current active experiment: corridor_only
 
 All paths in this section are relative to
-`/home/sid/sae_mission2/world/experiments/corridor_only`.
+`/home/sid/[competition]_mission2/world/experiments/corridor_only`.
 
 ### Files and geometry
 
@@ -753,7 +753,7 @@ Timeout overrides for this experiment (wall seconds; native code unchanged):
   candidates, both fits invalid, confidence 0.0; L about 1.947 m and remaining
   diagnostic sectors empty.
 - `validate_sensors.sh`: bounded headless real Gazebo sensor test with
-  `GZ_PARTITION=sae_corridor_validation`. Starts `gz sim -s -r
+  `GZ_PARTITION=[competition]_corridor_validation`. Starts `gz sim -s -r
   --headless-rendering` under `timeout 35s`, runs read-only inspection, and
   traps EXIT to stop/wait its own background process.
 - `artifacts/validation_models/iris_corridor_test/{model.sdf,model.config}`:
@@ -789,19 +789,19 @@ may have changed this. Do not issue blanket `pkill -9` cleanup.
 Terminal 1:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/gazebo.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/gazebo.sh
 ```
 
 Wait for world load. Terminal 2:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/sitl.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/sitl.sh
 ```
 
 Terminal 3:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mavproxy.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/mavproxy.sh
 ```
 
 After initialization/EKF readiness, type in MAVProxy:
@@ -815,14 +815,14 @@ takeoff 1.3
 Wait for steady hover. Terminal 4:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mission.sh --inspect
+bash ~/[competition]_mission2/world/experiments/corridor_only/mission.sh --inspect
 ```
 
 Require strict_valid true, width near 3.5 and confidence >0.7 before proceeding.
 Then, in Terminal 4:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mission.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/mission.sh
 ```
 
 Success marker: `[PASS] CORRIDOR_EXITED`. Land in Terminal 3:
@@ -838,7 +838,7 @@ after a prior traversal.
 Useful offline commands:
 
 ```bash
-source ~/sae_mission2/world/experiments/corridor_only/env.sh
+source ~/[competition]_mission2/world/experiments/corridor_only/env.sh
 python3 "$CORRIDOR_TEST_ROOT/replay.py" --synthetic
 python3 "$CORRIDOR_TEST_ROOT/replay.py" \
   --scan "$CORRIDOR_TEST_ROOT/artifacts/flight/live_scan.npz" \
@@ -856,7 +856,7 @@ tuning before checking the isolated test result.
 
 ### Main integration files
 
-Paths relative to `/home/sid/sae_mission2/world`:
+Paths relative to `/home/sid/[competition]_mission2/world`:
 
 - `integration/experimental_corridor_manager.py`: existing manager extensively
   revised in this session; camera/Gazebo adapter, MAVLink cache/senders,
@@ -961,7 +961,7 @@ recovery 32 s, reassessment hard cap 48 s. Pose-loss guards are preserved.
 
 ### Camera detector state
 
-`/home/sid/sae_mission2/approach/autonomy/perception/hybrid_banner_detector.py`
+`/home/sid/[competition]_mission2/approach/autonomy/perception/hybrid_banner_detector.py`
 exports `HybridBannerDetector(panel_only=False)` and
 `detect(frame, relaxed_approach=False)`.
 
@@ -1018,9 +1018,9 @@ export GZ_IP=127.0.0.1
 export GZ_PARTITION=miss2_local
 export GZ_DISCOVERY_MULTICAST_IP=239.255.0.7
 export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/ardupilot_gazebo/build:${GZ_SIM_SYSTEM_PLUGIN_PATH:-}"
-export GZ_SIM_RESOURCE_PATH="$HOME/sae_mission2/world/models/models:$HOME/ardupilot_gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"
+export GZ_SIM_RESOURCE_PATH="$HOME/[competition]_mission2/world/models/models:$HOME/ardupilot_gazebo/models:${GZ_SIM_RESOURCE_PATH:-}"
 export SDF_PATH="$GZ_SIM_RESOURCE_PATH"
-gz sim -r -v4 "$HOME/sae_mission2/world/worlds/miss2_full_world.sdf"
+gz sim -r -v4 "$HOME/[competition]_mission2/world/worlds/miss2_full_world.sdf"
 ```
 
 Terminal 2:
@@ -1043,17 +1043,17 @@ wait for hover). `set streamrate 20` can be used to request faster streams.
 Terminal 4:
 
 ```bash
-cd ~/sae_mission2/world
+cd ~/[competition]_mission2/world
 export GZ_IP=127.0.0.1
 export GZ_PARTITION=miss2_local
 export GZ_DISCOVERY_MULTICAST_IP=239.255.0.7
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
-export PYTHONPATH="$HOME/sae_mission2/approach:$HOME/sae_mission2/corridor:/usr/lib/python3/dist-packages"
+export PYTHONPATH="$HOME/[competition]_mission2/approach:$HOME/[competition]_mission2/corridor:/usr/lib/python3/dist-packages"
 gz topic -i -t /iris/camera_forward/image_raw
 gz topic -i -t /iris/lidar/scan
 python3 -u integration/experimental_corridor_manager.py \
   --mavlink udpin:0.0.0.0:14552 --banner-loss-frames 5 \
-  2>&1 | tee /tmp/sae_corridor_test.log
+  2>&1 | tee /tmp/[competition]_corridor_test.log
 ```
 
 Full sensor topics also include forward/downward camera_info, downward image,
@@ -1177,9 +1177,9 @@ kept unchanged while investigating because the clean-scan FSM already works.
 ### Diagnostic artifacts and limitations
 
 The full manager now writes a one-time capture at the first native step:
-`/tmp/sae_preentry_scan.npz` and `/tmp/sae_preentry_geometry.json`, and prints
+`/tmp/[competition]_preentry_scan.npz` and `/tmp/[competition]_preentry_geometry.json`, and prints
 `[PRE_ENTRY SNAPSHOT]`. These are overwritten on later runs and /tmp is not
-durable. They and `/tmp/sae_corridor_test.log` were no longer visible during
+durable. They and `/tmp/[competition]_corridor_test.log` were no longer visible during
 handoff inspection. The prior scan's plot/report persist under the experiment
 artifacts; the real headless test has its own persisted raw scan.
 
@@ -1313,9 +1313,9 @@ and rerun Terminal 4.
 
 ## Next Session
 
-Start by reading `/home/sid/sae_mission2/world/HANDOFF.md` (this canonical file)
-and `/home/sid/sae_mission2/world/experiments/corridor_only/README.md`. If starting
-from the Desktop copy, `cd /home/sid/sae_mission2/world` before repository work.
+Start by reading `/home/sid/[competition]_mission2/world/HANDOFF.md` (this canonical file)
+and `/home/sid/[competition]_mission2/world/experiments/corridor_only/README.md`. If starting
+from the Desktop copy, `cd /home/sid/[competition]_mission2/world` before repository work.
 Check the world, corridor and approach Git status independently; preserve the
 native `native-non-ros` branch and unrelated dirty files.
 
@@ -1334,7 +1334,7 @@ sandbox; use the proper approval mechanism, not alternate tools to bypass it.
 
 Keep logs/captures under `experiments/corridor_only/artifacts` so they survive
 session changes. The handoff is also saved at `/home/sid/Desktop/HANDOFF.md`
-and `/home/sid/sae_mission2/HANDOFF.md`; update those copies from the canonical
+and `/home/sid/[competition]_mission2/HANDOFF.md`; update those copies from the canonical
 file when refreshing context. At the end of the handoff-writing turn, stop:
 the user explicitly prohibited further implementation in that turn.
 
@@ -1415,3 +1415,4 @@ and has no Picamera2, so **no Pi throughput or real-camera result is claimed**.
 The full mission still uses Gazebo LiDAR/camera subscriptions and is not a
 flight-ready Pi runner. See `world/integration/PI_HARDWARE_HANDOFF.md` for the
 Pi commands, provisional timing checks and missing LiDAR/FC integration data.
+

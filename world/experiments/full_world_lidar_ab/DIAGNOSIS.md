@@ -135,10 +135,11 @@ No commits, branch switches or resets made.
 ## Next Session
 
 Read this report and README; inspect final original/inward `_no_joint` reports.
-Working directory: `/home/sid/sae_mission2/world`. The two README commands
+Working directory: `/home/sid/[competition]_mission2/world`. The two README commands
 reproduce the diagnosis without SITL, arming or a flight.
 
 The full mesh now has inward and outward corridor faces. Restart Gazebo to load
 it and test full approach, 0.5 m handoff, 1 m descent,
 2 s hover, PRE_ENTRY, entry, cruise and exit. Full-world flight success is
 still unverified. Preserve freshness checks, confidence gates and abort rules.
+

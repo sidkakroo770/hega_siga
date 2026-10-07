@@ -24,7 +24,7 @@ changed by these scripts.
 ## Terminal 1 — Gazebo
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/gazebo.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/gazebo.sh
 ```
 
 Wait for the world to load. The launch script includes the local multicast setup.
@@ -32,13 +32,13 @@ Wait for the world to load. The launch script includes the local multicast setup
 ## Terminal 2 — SITL
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/sitl.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/sitl.sh
 ```
 
 ## Terminal 3 — MAVProxy
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mavproxy.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/mavproxy.sh
 ```
 
 Wait for initialization and EKF readiness. In the MAVProxy prompt:
@@ -56,7 +56,7 @@ Wait until the drone is hovering steadily inside the corridor.
 First verify the actual airborne scan. This command sends no movement commands:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mission.sh --inspect
+bash ~/[competition]_mission2/world/experiments/corridor_only/mission.sh --inspect
 ```
 
 Expected: `strict_valid: true`, `width` near 3.5, confidence above 0.7 and valid
@@ -67,7 +67,7 @@ inspection exits with status 2; inspect its log rather than starting flight.
 When inspection passes:
 
 ```bash
-bash ~/sae_mission2/world/experiments/corridor_only/mission.sh
+bash ~/[competition]_mission2/world/experiments/corridor_only/mission.sh
 ```
 
 Expected progression:
@@ -105,7 +105,7 @@ The headless sensor test and offline FSM test do not establish flight success.
 Replay any captured scan:
 
 ```bash
-source ~/sae_mission2/world/experiments/corridor_only/env.sh
+source ~/[competition]_mission2/world/experiments/corridor_only/env.sh
 python3 "$CORRIDOR_TEST_ROOT/replay.py" \
   --scan "$CORRIDOR_TEST_ROOT/artifacts/flight/live_scan.npz" \
   --output "$CORRIDOR_TEST_ROOT/artifacts/flight/replay"
@@ -114,6 +114,7 @@ python3 "$CORRIDOR_TEST_ROOT/replay.py" \
 Run the offline FSM test without Gazebo:
 
 ```bash
-source ~/sae_mission2/world/experiments/corridor_only/env.sh
+source ~/[competition]_mission2/world/experiments/corridor_only/env.sh
 python3 "$CORRIDOR_TEST_ROOT/replay.py" --synthetic
 ```
+

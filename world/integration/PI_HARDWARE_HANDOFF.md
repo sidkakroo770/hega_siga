@@ -19,7 +19,7 @@ rpicam-hello --list-cameras
 python3 -c 'from picamera2 import Picamera2; print(Picamera2.global_camera_info())'
 ```
 
-From the `sae_mission2` repository root, substitute the observed indexes:
+From the `[competition]_mission2` repository root, substitute the observed indexes:
 
 ```bash
 python3 -m world.integration.pi_camera_benchmark \
@@ -40,3 +40,4 @@ Repeat once with `--gui` to measure the diagnostic-display overhead separately. 
 ## Next integration boundary
 
 The hardware runner still needs a physical LiDAR adapter and a sensor-backend selection for the full-mission manager. `PiCoverageSensors` is an injection seam, not evidence that the entire mission can presently run on the Pi. Once the LiDAR and FC interfaces are known, connect both physical camera streams and LiDAR through that backend, keep one mission command authority, and re-run mission/fault tests with real timing. Do not use the Gazebo-only runner as a flight program.
+

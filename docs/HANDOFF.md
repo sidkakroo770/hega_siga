@@ -1340,64 +1340,31 @@ the user explicitly prohibited further implementation in that turn.
 
 ## Current post-corridor coding status — 2026-10-06
 
-The historical Next Session note above predates the implemented full mission.
-Read `integration/FULL_MISSION_COVERAGE.md` and
-`/home/sid/Desktop/post_corridor_analysis.md` for current details. Global stage
-transitions and a stage-token leased command sender now span corridor and
-coverage; the integrated coverage runtime no longer takes direct MAVLink output
-authority. Field-frame/geofence registration, corridor-heading advance,
-per-pixel red/usable projection, five-frame red confirmation,
-clearance-aware exclusion, separate coverage GUI, terminal validity and
-checked hierarchical routing were implemented.
+This historical corridor handoff has been superseded for the integrated
+post-corridor stage. Read `/home/sid/[competition]_mission2/world/integration/FULL_MISSION_COVERAGE.md`
+and `/home/sid/Desktop/post_corridor_analysis.md`. One stage-token leased
+command sender spans corridor and coverage; field geometry can be registered
+from four surveyed GPS corners and FC origin, and field advance follows the
+measured exit bearing. Coverage now uses per-pixel red/usable homography,
+five-frame red confirmation, clearance-aware exclusion, a separate optional
+GUI, valid terminal control and checked hierarchical routing.
 
-76 selected offline tests passed; one old isolated-project test still expects
-two-frame red confirmation and was deselected. The sandbox denied socket
-creation for a new Gazebo campaign, so **this edited revision has not yet
-passed Gazebo**, despite older successful campaigns. Run the full-world
-manager/truth-monitor instructions in `integration/FULL_MISSION_COVERAGE.md`
-outside the sandbox. Pi acquisition/timing, IMX296/lens calibration, FC
-failsafes, concurrent workload and outdoor color tests remain pending. QR,
-payload delivery and return are not implemented by this update.
+76 selected offline tests passed. One old isolated-project test expects the
+superseded two-frame rule. A new Gazebo campaign could not start because this
+sandbox denied socket creation, so the edited mission is **not yet Gazebo
+validated**. Real IMX296 camera timing/calibration and Pi/FC/site testing are
+pending; QR, delivery and return remain out of scope.
 
 ## Latest integrated coverage status — 2026-10-07
 
-The sandbox warning above is historical. Original-world Gazebo flights with
-independent truth have run, but the controller has not yet reached `COMPLETE`.
-The last one stopped with 15 dense points at a printed QR patch; a bounded
-small-unknown-map correction now resolves all 15 in a saved-map kinematic
-replay (two checked trips, 30.14 m, ~33 ms worst route) in under a second.
-65 selected offline tests pass. This is **not** an end-to-end Gazebo pass.
-Use `integration/FULL_MISSION_COVERAGE.md` for run evidence and the fast replay
-command before another long flight. Real Pi/camera/FC validation remains open.
+The sandbox note above is historical. Multiple full-world Gazebo runs were
+recorded with independent truth but none has reached controller `COMPLETE`.
+The latest stopped with 15 dense points at a QR print. The new bounded
+tiny-unknown inference and checked-route logic clear them in a saved-map
+kinematic replay in under a second; 65 selected offline tests pass. This does
+not prove the whole Gazebo mission. See
+`/home/sid/[competition]_mission2/world/integration/FULL_MISSION_COVERAGE.md` for exact
+evidence and the cheap replay command. Do not spend another full-flight run
+debugging a map issue that can be reproduced from saved artifacts.
 
-Two additional 2× autonomous-takeoff full-world flights did not pass. The
-first exposed 33 contextual-clear cells incorrectly holding completion;
-the second exposed repeated planner timeouts and a zero-command HOLD rejected
-by accelerated source-time freshness. Targeted changes are in place with 68
-selected tests passing, but no final full Gazebo confirmation. See
-`integration/FULL_MISSION_COVERAGE.md` for the exact evidence.
-
-The full-mission profile provisionally treats non-red dark/black pixels in
-fresh, correctly shaped frames as clear and skips the old green/print support
-blurs. Entirely black received frames are no longer rejected on content alone,
-per user decision; missing/stale frames remain invalid. 68 selected tests and
-two saved-map replays pass. A fresh camera-fault black frame could be mistaken
-for clear ground; real dark-red detection remains a site-test requirement.
-
-The staged run `integration/artifacts/full_corridor1x_20261007` then reached
-manager and coverage `COMPLETE` with zero planner timeouts and zero sampled
-red/fence violations. The user accepted this as a **Gazebo mission pass with
-documented exceptions**: the unchanged independent evaluator still flags 25
-unviewed cells in one red-clearance-excluded 0.25 m² patch and a 0.307 m
-credited-point error against 0.300 m. Details are in
-`integration/FULL_MISSION_COVERAGE.md`. This is not Pi or real-flight proof.
-
-## Pi camera integration status — 2026-10-07
-
-`integration/pi_camera.py` and `integration/pi_camera_benchmark.py` prepare
-two IMX296 streams for a propellers-off Pi test. Selected software tests pass
-(51 total), but actual throughput/thermal/latency data cannot be measured on
-this x86 host. The Gazebo full-mission manager is not yet a Pi flight runner;
-the real LiDAR and FC transport are still unspecified. The exact next checks
-and commands are in `integration/PI_HARDWARE_HANDOFF.md`.
 

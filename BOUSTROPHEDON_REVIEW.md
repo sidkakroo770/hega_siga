@@ -2,7 +2,7 @@ The current script is suitable for an early sweep-behavior experiment, but a suc
 
 The most significant findings are a camera-configuration mismatch, an unenforced “geofence,” a recovery rule that can skip all remaining rows, and continued motion based on stale or geometrically ambiguous perception.
 
-I read all 289 lines of [boustrophedon_sweep.py](/home/sid/sae_mission2/boustrophedon_sweep.py) and all three pages of the [mission PDF](</home/sid/sae_mission2/autonomous mission_SAE_AEROTHON.pdf>), including Figure 3. I also checked relevant local camera definitions and ArduPilot behavior. I made no code changes and did not launch or command a vehicle. Validation here consists of static analysis, isolated synthetic-image checks, and numerical checks of the recovery condition—not an end-to-end Gazebo test.
+I read all 289 lines of [boustrophedon_sweep.py](/home/sid/[competition]_mission2/boustrophedon_sweep.py) and all three pages of the [mission PDF](</home/sid/[competition]_mission2/autonomous mission_[competition]_[competition].pdf>), including Figure 3. I also checked relevant local camera definitions and ArduPilot behavior. I made no code changes and did not launch or command a vehicle. Validation here consists of static analysis, isolated synthetic-image checks, and numerical checks of the recovery condition—not an end-to-end Gazebo test.
 
 ## Mission intent versus implemented behavior
 
@@ -36,7 +36,7 @@ For the classifications below:
 
 ## PART A — Gazebo / simulation audit
 
-All script line references below refer to `sae_mission2/boustrophedon_sweep.py`.
+All script line references below refer to `[competition]_mission2/boustrophedon_sweep.py`.
 
 ### A1. Sensor and mission assumptions
 
@@ -47,7 +47,7 @@ All script line references below refer to `sae_mission2/boustrophedon_sweep.py`.
 | **A3 — entire file** | No LiDAR subscription, scan parsing, distance checking, or sensor-health handling. | Non-red obstacles do not influence this controller. Success in an open red-patch world does not validate obstacle avoidance. An external flight-controller avoidance configuration could provide protection, but this file neither establishes nor verifies it. | **High — definite absence; collision is conditional.** |
 | **A4 — imports L11–12; L32–34, L143–144; L136–137** | Fixed Gazebo Transport/message versions, absolute topic, localhost UDP port 14550, and mandatory GUI display. Subscription success is not checked. | A different namespace, camera plugin, bridge, port arrangement, Gazebo version, or headless environment can prevent operation. An incompatible GUI backend can terminate the process. This is direct Gazebo Transport, not ROS. | **Medium — potential setup failure.** |
 
-The mismatch is supported by more than the topic name: the local [full-world model](/home/sid/sae_mission2/world/models/models/iris_miss2_full/model.sdf:994) defines that camera pitched approximately 90° downward, at 640 × 480 and 30 Hz, with horizontal FOV 1.047 rad. That establishes what **that model** supplies; it does not establish which world/model you currently launch.
+The mismatch is supported by more than the topic name: the local [full-world model](/home/sid/[competition]_mission2/world/models/models/iris_miss2_full/model.sdf:994) defines that camera pitched approximately 90° downward, at 640 × 480 and 30 Hz, with horizontal FOV 1.047 rad. That establishes what **that model** supplies; it does not establish which world/model you currently launch.
 
 ### A2. Field geometry, coverage, and navigation
 
@@ -326,3 +326,4 @@ The missing evidence that most limits this review is: the active launch/model, f
 - **Do not add a fixed turn radius merely because none exists.** Stop-and-yaw is a reasonable multirotor test behavior; braking, drift, and visibility during it require validation.
 - **Do not generalize protocol constants indiscriminately.** NED conventions and supported image formats need explicit contracts; they are not all user-adjustable “magic numbers.”
 - **Do not treat every missing full-mission feature as a defect in an intentionally isolated sweep test.** QR delivery, return, and payload handling can remain outside this file during focused testing—but this file’s completion message cannot serve as evidence that those tasks succeeded.
+

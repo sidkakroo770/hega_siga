@@ -11,7 +11,7 @@ Changes:
 - Add focused regression tests.
 
 Run from anywhere:
-    python3 apply_camera_sweep_geometry.py ~/coverage_ws/src/coverage_mission_pipeline
+    python3 tools/camera_sweep_geometry.py ~/coverage_ws/src/coverage_mission_pipeline
 """
 
 from __future__ import annotations

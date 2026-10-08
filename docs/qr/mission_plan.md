@@ -315,4 +315,4 @@ This plan deliberately adds no AI, online URL resolution, speculative organizer 
 
 ## Implementation follow-up — 2026-10-08
 
-The implementation and the GUI-enabled early-target Gazebo checkpoint are now recorded in `QR_MISSION_IMPLEMENTATION_STATUS.md`, with measured independent safety/centering/descent evidence, retained failed development runs and remaining hardware/organizer work. The plan above remains the historical planning record. The original collision environment was preserved while all six coloured screenshot QR visuals were replaced by valid black-and-white fixtures.
+The implementation and the GUI-enabled early-target Gazebo checkpoint are now recorded in `docs/qr/mission_status.md`, with measured independent safety/centering/descent evidence, retained failed development runs and remaining hardware/organizer work. The plan above remains the historical planning record. The original collision environment was preserved while all six coloured screenshot QR visuals were replaced by valid black-and-white fixtures.

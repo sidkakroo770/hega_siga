@@ -6,7 +6,7 @@ The default runner now includes initial/field QR inspection and a return extensi
 after the matched target's five-second 5 m hold. Return retains field safety,
 acquires the orange banner, repeats a fresh native corridor FSM and requests
 exterior landing with on-ground/disarmed confirmation. Current validation and
-launch instructions are in `../../RETURN_MISSION_IMPLEMENTATION_STATUS.md`.
+launch instructions are in `../../docs/return/mission_status.md`.
 The older segment description below applies to the explicit coverage-only
 regression profile, not the current full-mission endpoint.
 
@@ -61,7 +61,7 @@ on the earlier independent geometry result.
 
 The default manager now implements the initial/field QR mission and a 5 m
 startup. For that complete sequence, use the repository-root
-`QR_MISSION_IMPLEMENTATION_STATUS.md` instructions. The following retains
+`../../docs/qr/mission_status.md` instructions. The following retains
 the historical coverage-only regression and deliberately skips QR tasks.
 
 Use separate terminals. First, with the usual Gazebo/SITL dependencies installed:

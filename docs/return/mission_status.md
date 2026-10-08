@@ -8,7 +8,7 @@ Latest corrective checkpoint: staging admission survives sensor holds without
 authorising motion, and the front feed/preview stops after outbound exit then
 resumes with an explicit orange-mask window. 175 regressions, a failed-position
 map check and a targeted return-to-landing Gazebo flight passed. See
-[RETURN_SENSOR_HOLD_FIX.md](RETURN_SENSOR_HOLD_FIX.md). The complete
+[sensor_hold_fix.md](sensor_hold_fix.md). The complete
 initial-QR-to-landing success recorded below predates this correction; that
 entire flight was not repeated. Pi/hardware timing remains unmeasured.
 

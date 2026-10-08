@@ -8,7 +8,7 @@ discovery exposures and bounded lost/progress/retry handling. A recorded-geometr
 replay, 168 regressions and an actual textured-ground field approach through
 matching QR descent passed. One real-marker loss recovered on its second attempt;
 no false grass candidate was selected. Details and the limits of this evidence:
-[QR_FALSE_CANDIDATE_FIX.md](QR_FALSE_CANDIDATE_FIX.md).
+[../validation/qr_false_candidate_fix.md](../validation/qr_false_candidate_fix.md).
 
 ## Shared camera / red-boundary checkpoint
 
@@ -16,14 +16,14 @@ The targeted shared-downward-camera tests passed: actual centering, three
 stationary matching reads and 5 m descent beside red; a second fixture excluded
 an unsafe target without reading or descending. Seven offline safety cases and
 the selected 148-test regression suite passed. See
-[QR_RED_ZONE_VALIDATION.md](QR_RED_ZONE_VALIDATION.md) for evidence and limits.
+[../validation/qr_red_zone_validation.md](../validation/qr_red_zone_validation.md) for evidence and limits.
 No complete corridor flight was repeated; Pi performance is not yet validated.
 
 ## Return continuation
 
 The results below validate the earlier QR-only endpoint. The default full mission
 now continues through the return extension; see
-[RETURN_MISSION_IMPLEMENTATION_STATUS.md](RETURN_MISSION_IMPLEMENTATION_STATUS.md).
+[../return/mission_status.md](../return/mission_status.md).
 Use `--qr-only` for the original endpoint. The QR validation harness preserves
 QR-only behaviour unless `--return-mission` is supplied explicitly.
 
@@ -56,14 +56,14 @@ Implementation date: 2026-10-08. This extends the [competition] mission; physica
 - `world/integration/build_qr_assets.py`: reproducible texture generation and environment visual stripping; preserves the original collision asset.
 - `world/integration/qr_gazebo_validation.py`: owned-process validation harness; never kills unrelated processes.
 - `coverage_mission/evaluate_qr_run.py`: independent early-target evaluator. Full-field completion is deliberately not required after a match.
-- `requirements-qr.txt`: pinned runtime decoder and fixture-generator packages. Runtime also needs `libzbar0`.
+- `requirements/qr.txt`: pinned runtime decoder and fixture-generator packages. Runtime also needs `libzbar0`.
 
 ## Running the simulation
 
 Run from the repository root, with Gazebo, the existing ArduPilot build and MAVProxy installed. No other simulator may occupy TCP 5760 / the default JSON physics ports. The harness owns and cleans up only processes it starts.
 
 ```bash
-python3 -m pip install --user -r requirements-qr.txt
+python3 -m pip install --user -r requirements/qr.txt
 # If libzbar is missing: sudo apt install libzbar0
 python3 world/integration/build_qr_assets.py
 python3 -m world.integration.qr_gazebo_validation \

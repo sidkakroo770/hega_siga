@@ -2,7 +2,7 @@ The current script is suitable for an early sweep-behavior experiment, but a suc
 
 The most significant findings are a camera-configuration mismatch, an unenforced “geofence,” a recovery rule that can skip all remaining rows, and continued motion based on stale or geometrically ambiguous perception.
 
-I read all 289 lines of [boustrophedon_sweep.py](/home/sid/[competition]_mission2/boustrophedon_sweep.py) and all three pages of the [mission PDF](</home/sid/[competition]_mission2/autonomous mission_[competition]_[competition].pdf>), including Figure 3. I also checked relevant local camera definitions and ArduPilot behavior. I made no code changes and did not launch or command a vehicle. Validation here consists of static analysis, isolated synthetic-image checks, and numerical checks of the recovery condition—not an end-to-end Gazebo test.
+I read all 289 lines of [the archived sweep prototype](../../archive/legacy/boustrophedon_sweep_prototype.py) and all three pages of the [mission PDF](</home/sid/[competition]_mission2/autonomous mission_[competition]_[competition].pdf>), including Figure 3. I also checked relevant local camera definitions and ArduPilot behavior. I made no code changes and did not launch or command a vehicle. Validation here consists of static analysis, isolated synthetic-image checks, and numerical checks of the recovery condition—not an end-to-end Gazebo test.
 
 ## Mission intent versus implemented behavior
 
@@ -36,7 +36,7 @@ For the classifications below:
 
 ## PART A — Gazebo / simulation audit
 
-All script line references below refer to `[competition]_mission2/boustrophedon_sweep.py`.
+All script line references below refer to `archive/legacy/boustrophedon_sweep_prototype.py`.
 
 ### A1. Sensor and mission assumptions
 
@@ -326,4 +326,3 @@ The missing evidence that most limits this review is: the active launch/model, f
 - **Do not add a fixed turn radius merely because none exists.** Stop-and-yaw is a reasonable multirotor test behavior; braking, drift, and visibility during it require validation.
 - **Do not generalize protocol constants indiscriminately.** NED conventions and supported image formats need explicit contracts; they are not all user-adjustable “magic numbers.”
 - **Do not treat every missing full-mission feature as a defect in an intentionally isolated sweep test.** QR delivery, return, and payload handling can remain outside this file during focused testing—but this file’s completion message cannot serve as evidence that those tasks succeeded.
-

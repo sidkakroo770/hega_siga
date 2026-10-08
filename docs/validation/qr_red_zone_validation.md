@@ -3,7 +3,7 @@
 Latest corrective checkpoint: the subsequent main-world approach exposed false
 QR detection/selection over grass, which these initial near-target fixtures did
 not exercise. The fix and new 18-check textured-ground approach are documented in
-[QR_FALSE_CANDIDATE_FIX.md](QR_FALSE_CANDIDATE_FIX.md). Earlier results below are
+[qr_false_candidate_fix.md](qr_false_candidate_fix.md). Earlier results below are
 retained with their original scope; they were not proof of textured-ground search.
 
 Date: 2026-10-08. Scope: targeted [competition] field-phase validation, not physical flight approval.

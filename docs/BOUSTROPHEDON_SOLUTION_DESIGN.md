@@ -48,8 +48,8 @@ The workspace contains separate world, corridor, and approach repositories. Avoi
 Relevant local references:
 
 - [Mission context PDF](</home/sid/[competition]_mission2/autonomous mission_[competition]_[competition].pdf>)
-- [Current sweep script](/home/sid/[competition]_mission2/boustrophedon_sweep.py)
-- [Previous audit](/home/sid/[competition]_mission2/BOUSTROPHEDON_REVIEW.md)
+- [Archived sweep prototype](../archive/legacy/boustrophedon_sweep_prototype.py)
+- [Previous audit](reviews/boustrophedon_review.md)
 - [Coverage generator](/home/sid/coverage_ws/generate_waypoints.py)
 - [Canonical world handoff](/home/sid/[competition]_mission2/world/HANDOFF.md)
 - [Independent corridor experiment](/home/sid/[competition]_mission2/world/experiments/corridor_only/README.md)
@@ -343,5 +343,4 @@ The arbitrary old coordinates will not be reused as authoritative bounds. Establ
 Next implementation, when explicitly requested: establish the isolated two-camera fixture using the existing flight stack; implement/test geometry and timing contracts; replace coverage progress and routing; add perception mapping, residence monitoring and recovery; then execute the bounded Gazebo test matrix. Preserve existing takeoff/corridor behavior and unrelated files.
 
 Session stopping point: design document updated with the final timing clarification. The user is done for today. Do not begin implementation until a subsequent request authorizes it.
-
 

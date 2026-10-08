@@ -3,7 +3,7 @@
 ## Return extension checkpoint — 2026-10-08
 
 The full mission now includes a return implementation; see
-`../../RETURN_MISSION_IMPLEMENTATION_STATUS.md` for current test evidence.
+`../../docs/return/mission_status.md` for current test evidence.
 It reuses the map worker, bounded sensor history and leased sender, and releases
 QR decoding after match. Entrance, exterior landing and colour profiles remain
 Gazebo/site assumptions. This does not change the hardware-flight-ready status.
@@ -50,7 +50,7 @@ Repeat once with `--gui` to measure the diagnostic-display overhead separately. 
 ### QR workload added — 2026-10-08
 
 The same isolated QR perception worker can now be included in the ground-only
-dual-camera benchmark. Install `requirements-qr.txt` and distribution
+dual-camera benchmark. Install `requirements/qr.txt` and distribution
 `libzbar0`, then add `--qr` to the benchmark command. Use
 `--qr --qr-stationary` with a visible test print to include selected-marker
 decoding; this is explicitly a synthetic-pose, stationary ground workload,
@@ -60,7 +60,7 @@ is provisionally 5 Hz; decoding is capped at 2 Hz. The worker has a separate
 bounded cold-start readiness window and does not queue old frames during it.
 
 QR identity, centering, timing and descent integration are documented in the
-repository-root `QR_MISSION_IMPLEMENTATION_STATUS.md`. Actual Pi performance,
+repository `docs/qr/mission_status.md`. Actual Pi performance,
 10 m optical readability, final print/lens calibration and physical sensor
 backend integration remain unmeasured. No AI model was added.
 
